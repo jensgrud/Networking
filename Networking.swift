@@ -129,6 +129,23 @@ public class HTTPClient : NSObject {
     
     // MARK: Fire request
     
+    public func request(api :API, callback: HTTPClientCallback) -> Request? {
+     
+        guard let router = self.router else {
+            return nil
+        }
+        
+        var authenticationHeader :String = "Authenticate"
+        
+        if let authenticationStrategy = authenticationStrategy {
+            authenticationHeader = authenticationStrategy.authenticationHeader
+        }
+
+        let request = router.buildRequest(api, authenticationHeader: authenticationHeader)
+        
+        return self.request(request, callback: callback)
+    }
+    
     public func request(request :NSURLRequest, callback: HTTPClientCallback) -> Request {
         
         let task = manager.request(request)
