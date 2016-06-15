@@ -49,10 +49,10 @@ public protocol API {
 
 public protocol AuthenticationStrategy: class {
     
-    var token: String? { get set }
     var authenticationHeader: String { get set }
     var isRefreshing: Bool { get }
-    var retries: Int { get }
+    var retries: Int { get set }
+    var retriesLimit: Int { get }
     
     func refreshToken(completionHandler: (error :NSError?, token: String?) -> Void)
 }
@@ -194,6 +194,19 @@ public class HTTPClient : NSObject {
             return
         }
         
+        guard authenticationStrategy.retries < authenticationStrategy.retriesLimit + 1 else {
+            
+            authenticationStrategy.retries = 0
+            
+            if let task = task {
+                task.cancel()
+            }
+            
+            self.cancelAll()
+            
+            return completionHandler(statusCode: NSURLError.Cancelled.rawValue, data: nil, error: NSError(domain: "", code: 503, userInfo: ["message":"authentication limit reached"]))
+        }
+        
         guard !authenticationStrategy.isRefreshing else {
             
             if let task = task {
@@ -207,22 +220,21 @@ public class HTTPClient : NSObject {
 
         authenticationStrategy.refreshToken { (error, token) in
             
-            if let token = token, router = self.router {
-                router.OAuthToken = token
-            }
-            
-            if let request = task?.originalRequest {
-                request.URLRequest.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
-                self.request(request.URLRequest, callback: completionHandler).resume()
-            }
+            authenticationStrategy.retries = authenticationStrategy.retries + 1
             
             if let callback = authenticationCallback {
                 callback(error)
             }
             
             guard error == nil else {
-                self.cancelAll()
-                return completionHandler(statusCode: NSURLError.Cancelled.rawValue, data: nil, error: error)
+                
+                let delay = dispatch_time(DISPATCH_TIME_NOW, Int64(3 * Double(NSEC_PER_SEC)))
+                
+                dispatch_after(delay, dispatch_get_main_queue()) {
+                    self.performAuthentication(task, completionHandler: completionHandler, authenticationCallback: authenticationCallback)
+                }
+                
+                return
             }
             
             if let token = token, router = self.router {
@@ -231,15 +243,26 @@ public class HTTPClient : NSObject {
             
             self.resumeAll(token)
             
-            if let request = task?.originalRequest {
-                request.URLRequest.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
-                self.request(request.URLRequest, callback: completionHandler)
+            guard let request = task?.originalRequest else {
+                return
             }
             
-            if let iden = task?.taskIdentifier {
-                self.callbacks[iden] = nil
-                self.pendingRequests[iden] = nil
-            }
+            request.URLRequest.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
+            
+            self.request(request.URLRequest, callback: completionHandler)
+                .response(completionHandler: { (request, response, data, error) in
+                    
+                    guard response?.statusCode == 200 else {
+                        return
+                    }
+                    
+                    authenticationStrategy.retries = 0
+                    
+                    if let iden = task?.taskIdentifier {
+                        self.callbacks[iden] = nil
+                        self.pendingRequests[iden] = nil
+                    }
+                })
         }
     }
     
@@ -247,14 +270,9 @@ public class HTTPClient : NSObject {
         
         guard let statusCode = response.response?.statusCode else {
             
-            if let error = response.result.error {
-                
-                completionHandler(statusCode: error.code, data: response.data, error: error)
-            }
-            else {
-                completionHandler(statusCode: -1, data: nil, error: nil)
-            }
-            return
+            let error = response.result.error
+            
+            return completionHandler(statusCode: error?.code, data: response.data, error: error)
         }
         
         switch statusCode {
