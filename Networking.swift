@@ -21,20 +21,25 @@ public protocol Router :class {
 
 extension Router {
     
-    public func buildRequest(api :API, authenticationHeader :String = "Authentication") -> NSMutableURLRequest {
+    public func buildRequest(path :String, method :HTTPMethod, accept :ContentType?, encoding :ParameterEncoding, parameters :[String: AnyObject]?, authenticationHeader :String = "Authentication") -> NSMutableURLRequest {
         
-        let mutableURLRequest = NSMutableURLRequest(URL: self.baseURL.URLByAppendingPathComponent(api.path))
-        mutableURLRequest.HTTPMethod = api.method.rawValue
+        let mutableURLRequest = NSMutableURLRequest(URL: self.baseURL.URLByAppendingPathComponent(path))
+        mutableURLRequest.HTTPMethod = method.rawValue
         
         if let token = self.OAuthToken {
             mutableURLRequest.setValue(token, forHTTPHeaderField: authenticationHeader)
         }
         
-        if let accept = api.accept {
+        if let accept = accept {
             mutableURLRequest.setValue(accept.rawValue, forHTTPHeaderField: "Accept")
         }
         
-        return api.encoding.encode(mutableURLRequest, parameters: api.parameters).0
+        return encoding.encode(mutableURLRequest, parameters: parameters).0   
+    }
+    
+    public func buildRequest(api :API, authenticationHeader :String = "Authentication") -> NSMutableURLRequest {
+        
+        return self.buildRequest(api.path, method: api.method, accept: api.accept, encoding: api.encoding, parameters: api.parameters, authenticationHeader: authenticationHeader)
     }
 }
 
