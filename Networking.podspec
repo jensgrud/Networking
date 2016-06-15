@@ -1,8 +1,8 @@
 Pod::Spec.new do |s|
   s.name = 'Networking'
-  s.version = '0.1'
+  s.version = '0.2'
   s.license = { :type => "MIT", :file => "LICENSE" }
-  s.summary = 'HTTP Client for seamless authentication handling and pausing/resuming of requests'
+  s.summary = 'HTTP Client for seamless authentication handling with retries and pausing/resuming of requests'
   s.homepage = 'https://github.com/jensgrud/Networking'
   s.authors = { 'Jens Grud' => 'jens@heapsapp.com' }
   s.source = { :git => 'https://github.com/jensgrud/Networking.git', :tag => s.version }
@@ -12,8 +12,8 @@ Pod::Spec.new do |s|
   s.watchos.deployment_target = '2.0'
   s.tvos.deployment_target = '9.0'
 
-  s.source_files = '*.swift'
+  s.source_files = 'Networking.swift'
   s.requires_arc = true
 
-  s.dependency 'Alamofire', '~> 3.2'
+  s.dependency 'Alamofire'
 end
