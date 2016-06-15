@@ -220,10 +220,25 @@ public class HTTPClient : NSObject {
                 callback(error)
             }
             
+            guard error == nil else {
+                self.cancelAll()
+                return completionHandler(statusCode: NSURLError.Cancelled.rawValue, data: nil, error: error)
+            }
+            
+            if let token = token, router = self.router {
+                router.OAuthToken = token
+            }
+            
             self.resumeAll(token)
+            
+            if let request = task?.originalRequest {
+                request.URLRequest.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
+                self.request(request.URLRequest, callback: completionHandler)
+            }
             
             if let iden = task?.taskIdentifier {
                 self.callbacks[iden] = nil
+                self.pendingRequests[iden] = nil
             }
         }
     }
@@ -257,7 +272,25 @@ public class HTTPClient : NSObject {
     
     public func cancelAll() {
         
-        manager.session.invalidateAndCancel()
+        manager.session.getTasksWithCompletionHandler { dataTasks, uploadTasks, downloadTasks in
+            
+            for task in dataTasks {
+                task.cancel()
+            }
+            
+            for task in uploadTasks {
+                task.cancel()
+            }
+            
+            for task in downloadTasks {
+                task.cancel()
+            }
+        }
+        
+        manager.startRequestsImmediately = true
+        
+        pendingRequests.removeAll()
+        callbacks.removeAll()
     }
     
     private func suspendAll() {
