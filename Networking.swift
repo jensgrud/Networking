@@ -323,27 +323,27 @@ public class HTTPClient : NSObject {
         while let (identifier, task) = self.pendingRequests.popFirst() {
             
             guard let token = accessToken else {
-                return task.resume()
+                task.resume()
+                continue
             }
             
             guard let request = task.originalRequest?.URLRequest else {
-                return
+                task.resume()
+                continue
             }
             
             guard let callback = self.callbacks[identifier] else {
-                return
+                task.resume()
+                continue
             }
+            
+            task.cancel()
             
             if let authenticationStrategy = self.authenticationStrategy {
                 request.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
             }
             
             self.request(request, callback: callback)
-                .response(completionHandler: { (request, response, data, error) in
-                    
-                    self.callbacks[identifier] = nil
-                    task.cancel()
-            })
         }
     }
 }
