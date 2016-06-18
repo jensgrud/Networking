@@ -203,13 +203,9 @@ public class HTTPClient : NSObject {
             
             authenticationStrategy.retries = 0
             
-            if let task = task {
-                task.cancel()
-            }
-            
             self.cancelAll()
             
-            return completionHandler(statusCode: NSURLError.Cancelled.rawValue, data: nil, error: NSError(domain: "", code: 503, userInfo: ["message":"authentication limit reached"]))
+            return completionHandler(statusCode: NSURLError.UserCancelledAuthentication.rawValue, data: nil, error: NSError(domain: "", code: 503, userInfo: ["message":"authentication limit reached"]))
         }
         
         guard !authenticationStrategy.isRefreshing else {
@@ -257,13 +253,13 @@ public class HTTPClient : NSObject {
             
             self.resumeAll(token)
             
-            guard let request = task?.originalRequest else {
+            guard let request = task?.originalRequest?.URLRequest else {
                 return
             }
             
-            request.URLRequest.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
+            request.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
             
-            self.request(request.URLRequest, callback: completionHandler)
+            self.request(request, callback: completionHandler)
                 .response(completionHandler: { (request, response, data, error) in
                     
                     guard response?.statusCode == 200 else {
@@ -303,20 +299,46 @@ public class HTTPClient : NSObject {
     // MARK: - Suspend/pause/cancel
     
     public func cancelAll() {
+
+        let error = NSError(domain: "", code: 503, userInfo: nil)
         
         manager.session.getTasksWithCompletionHandler { dataTasks, uploadTasks, downloadTasks in
             
             for task in dataTasks {
+                
+                if let callback = self.callbacks[task.taskIdentifier] {
+                    callback(statusCode: NSURLError.Cancelled.rawValue, data: nil, error: error)
+                }
+                
                 task.cancel()
             }
             
             for task in uploadTasks {
+                
+                if let callback = self.callbacks[task.taskIdentifier] {
+                    callback(statusCode: NSURLError.Cancelled.rawValue, data: nil, error: error)
+                }
+                
                 task.cancel()
             }
             
             for task in downloadTasks {
+                
+                if let callback = self.callbacks[task.taskIdentifier] {
+                    callback(statusCode: NSURLError.Cancelled.rawValue, data: nil, error: error)
+                }
+                
                 task.cancel()
             }
+        }
+        
+        while let (identifier, task) = self.pendingRequests.popFirst() {
+            
+            if let callback = self.callbacks[task.taskIdentifier] {
+                callback(statusCode: NSURLError.Cancelled.rawValue, data: nil, error: error)
+            }
+            
+            task.cancel()
         }
         
         manager.startRequestsImmediately = true
