@@ -233,6 +233,15 @@ public class HTTPClient : NSObject {
             
             guard error == nil else {
                 
+                if let error = error where error.code == 504 {
+                    
+                    authenticationStrategy.retries = 0
+                    
+                    self.resumeAll()
+                    
+                    return completionHandler(statusCode: NSURLError.UserCancelledAuthentication.rawValue, data: nil, error: error)
+                }
+                
                 let delay = dispatch_time(DISPATCH_TIME_NOW, Int64(3 * Double(NSEC_PER_SEC)))
                 
                 dispatch_after(delay, dispatch_get_main_queue()) {
