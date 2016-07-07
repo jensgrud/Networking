@@ -70,6 +70,12 @@ public enum ContentType: String {
     case PropertyList = "application/x-plist"
 }
 
+public enum MimeType: String {
+    
+    case JPEG = "image/jpeg"
+    case MPEG = "video/mp4"
+}
+
 public class HTTPClient : NSObject {
  
     private static let kTimeSinceLast = "com.networking.time-since-last"
@@ -293,6 +299,53 @@ public class HTTPClient : NSObject {
         default:
             
             completionHandler(statusCode: statusCode, data: response.data, error: response.result.error)
+        }
+    }
+    
+    // MARK: - Upload
+    
+    public func uploadImage(image :UIImage, request :URLRequestConvertible, name :String = "file", filename :String = "filename.jpeg", mimeType :MimeType = .JPEG, callback: HTTPClientCallback) {
+        
+        guard let data = UIImageJPEGRepresentation(image, 0.8) else {
+            return callback(statusCode: -1, data: nil, error: NSError(domain: "", code: 502, userInfo: ["message":"invalid data"]))
+        }
+        
+        return self.uploadData(data, request: request, name: name, filename: filename, mimeType: mimeType, callback: callback)
+    }
+    
+    public func uploadVideo(path :String, request :URLRequestConvertible, name :String = "file", filename :String = "filename.mpeg", mimeType :MimeType = .MPEG, callback: HTTPClientCallback) {
+        
+        guard let data = NSData(contentsOfFile: path) else {
+            return callback(statusCode: -1, data: nil, error: NSError(domain: "", code: 502, userInfo: ["message":"invalid data"]))
+        }
+        
+        return self.uploadData(data, request: request, name: name, filename: filename, mimeType: mimeType, callback: callback)
+    }
+    
+    public func uploadData(data :NSData, request :URLRequestConvertible, name :String, filename :String, mimeType :MimeType, callback: HTTPClientCallback) {
+        
+        self.manager.upload(request, multipartFormData: { (formdata) in
+            
+            formdata.appendBodyPart(data: data, name: name, fileName: filename, mimeType: mimeType.rawValue)
+            
+            }) { (result) in
+                
+                switch result {
+                case .Success(let task, _, _):
+                    
+                    task.responseData(completionHandler: { (response) in
+                        
+                        guard response.result.isSuccess else {
+                            return self.handleError(task, response: response, completionHandler: callback)
+                        }
+                        
+                        callback(statusCode: response.response?.statusCode, data: response.data, error: response.result.error)
+                    })
+                    
+                case .Failure(let encodingError):
+                    
+                    callback(statusCode: -1, data: nil, error: NSError(domain: "", code: 503, userInfo: ["message":"encoding failed"]))
+                }
         }
     }
     
