@@ -199,7 +199,7 @@ public class HTTPClient : NSObject {
     
     // MARK: - Authentication
     
-    public func performAuthentication(task :NSURLSessionTask? = nil, completionHandler: HTTPClientCallback, authenticationCallback:(NSError? -> Void)? = nil) {
+    public func performAuthentication(task :NSURLSessionTask? = nil, suspend :Bool = true, completionHandler: HTTPClientCallback, authenticationCallback:(NSError? -> Void)? = nil) {
         
         guard let authenticationStrategy = authenticationStrategy else {
             return
@@ -223,7 +223,9 @@ public class HTTPClient : NSObject {
             return
         }
         
-        self.suspendAll()
+        if suspend {
+            self.suspendAll()
+        }
 
         authenticationStrategy.refreshToken { (error, token) in
             
