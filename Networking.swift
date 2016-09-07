@@ -16,7 +16,7 @@ public typealias HTTPClientCallback = (statusCode: Int?, data: NSData?, error: N
 public protocol Router :class {
 
     var baseURL: NSURL { get set }
-    var OAuthToken: String? { get set }
+    var accessToken: String? { get set }
 }
 
 extension Router {
@@ -26,7 +26,7 @@ extension Router {
         let mutableURLRequest = NSMutableURLRequest(URL: self.baseURL.URLByAppendingPathComponent(path))
         mutableURLRequest.HTTPMethod = method.rawValue
         
-        if let token = self.OAuthToken {
+        if let token = self.accessToken {
             mutableURLRequest.setValue(token, forHTTPHeaderField: authenticationHeader)
         }
         
@@ -256,7 +256,7 @@ public class HTTPClient : NSObject {
             }
             
             if let token = token, router = self.router {
-                router.OAuthToken = token
+                router.accessToken = token
             }
             
             self.resumeAll(token)
