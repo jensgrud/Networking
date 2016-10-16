@@ -23,7 +23,13 @@ extension Router {
     
     public func buildRequest(path :String, method :HTTPMethod, accept :ContentType?, encoding :ParameterEncoding, parameters :[String: AnyObject]?, authenticationHeader :String = "Authentication") -> NSMutableURLRequest {
         
-        let mutableURLRequest = NSMutableURLRequest(URL: self.baseURL.URLByAppendingPathComponent(path))
+        #if swift(>=2.3)
+            let baseURL = self.baseURL.URLByAppendingPathComponent(path)!
+        #else
+            let baseURL = self.baseURL.URLByAppendingPathComponent(path)
+        #endif
+        
+        let mutableURLRequest = NSMutableURLRequest(URL: baseURL)
         mutableURLRequest.HTTPMethod = method.rawValue
         
         if let token = self.accessToken {
