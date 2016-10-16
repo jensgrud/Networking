@@ -407,23 +407,37 @@ public class HTTPClient : NSObject {
         callbacks.removeAll()
     }
     
-    private func suspendAll() {
+    private func suspendAll(currentTask :NSURLSessionTask? = nil) {
         
         manager.startRequestsImmediately = false
         
         manager.session.getTasksWithCompletionHandler { dataTasks, uploadTasks, downloadTasks in
             
             for task in dataTasks {
+                
+                if let current = currentTask where current.taskIdentifier == task.taskIdentifier {
+                    continue
+                }
+                
                 task.suspend()
                 self.pendingRequests[task.taskIdentifier] = task
             }
             
             for task in uploadTasks {
+                
+                if let current = currentTask where current.taskIdentifier == task.taskIdentifier {
+                    continue
+                }
+                
                 task.suspend()
                 self.pendingRequests[task.taskIdentifier] = task
             }
             
             for task in downloadTasks {
+                
+                if let current = currentTask where current.taskIdentifier == task.taskIdentifier {
+                    continue
+                }
                 task.suspend()
                 self.pendingRequests[task.taskIdentifier] = task
             }
