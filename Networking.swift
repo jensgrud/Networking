@@ -235,21 +235,24 @@ public class HTTPClient : NSObject {
                 callback(error)
             }
             
-            guard error == nil else {
+            if let error = error {
                 
-                if let error = error where error.code == 504 {
+                switch error.code {
+                case 504:
                     
                     authenticationStrategy.retries = 0
                     
                     self.resumeAll()
                     
-                    return completionHandler(statusCode: NSURLError.UserCancelledAuthentication.rawValue, data: nil, error: error)
-                }
-                
-                let delay = dispatch_time(DISPATCH_TIME_NOW, Int64(3 * Double(NSEC_PER_SEC)))
-                
-                dispatch_after(delay, dispatch_get_main_queue()) {
-                    self.performAuthentication(task, completionHandler: completionHandler, authenticationCallback: authenticationCallback)
+                    completionHandler(statusCode: NSURLError.UserCancelledAuthentication.rawValue, data: nil, error: error)
+                    
+                default:
+                    
+                    let delay = dispatch_time(DISPATCH_TIME_NOW, Int64(3 * Double(NSEC_PER_SEC)))
+                    
+                    dispatch_after(delay, dispatch_get_main_queue()) {
+                        self.performAuthentication(task, completionHandler: completionHandler, authenticationCallback: authenticationCallback)
+                    }
                 }
                 
                 return
@@ -299,6 +302,8 @@ public class HTTPClient : NSObject {
             performAuthentication(request.task, completionHandler: completionHandler)
             
         default:
+            
+            self.callbacks[request.task.taskIdentifier] = nil
             
             completionHandler(statusCode: statusCode, data: response.data, error: response.result.error)
         }
@@ -429,30 +434,50 @@ public class HTTPClient : NSObject {
         
         manager.startRequestsImmediately = true
         
+        manager.session.getTasksWithCompletionHandler { dataTasks, uploadTasks, downloadTasks in
+            
+            for task in dataTasks {
+                self.resume(task, identifier: task.taskIdentifier, accessToken: accessToken)
+            }
+            
+            for task in uploadTasks {
+                self.resume(task, identifier: task.taskIdentifier, accessToken: accessToken)
+            }
+            
+            for task in downloadTasks {
+                self.resume(task, identifier: task.taskIdentifier, accessToken: accessToken)
+            }
+        }
+        
         while let (identifier, task) = self.pendingRequests.popFirst() {
+            self.resume(task, identifier: identifier, accessToken: accessToken)
+        }
+    }
+    
+    private func resume(task :NSURLSessionTask, identifier :Int, accessToken :String? = nil) {
+        
+        guard let token = accessToken else {
+            return task.resume()
+        }
+        
+        guard let request = task.originalRequest?.URLRequest else {
+            return task.resume()
+        }
+        
+        guard let callback = self.callbacks[identifier] else {
+            return task.resume()
+        }
+        
+        if let authenticationStrategy = self.authenticationStrategy {
+            request.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
+        }
+        
+        self.request(request) { (statusCode, data, error) in
+            callback(statusCode: statusCode, data: data, error: error)
             
-            guard let token = accessToken else {
-                task.resume()
-                continue
-            }
-            
-            guard let request = task.originalRequest?.URLRequest else {
-                task.resume()
-                continue
-            }
-            
-            guard let callback = self.callbacks[identifier] else {
-                task.resume()
-                continue
-            }
+            self.callbacks[identifier] = nil
             
             task.cancel()
-            
-            if let authenticationStrategy = self.authenticationStrategy {
-                request.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
-            }
-            
-            self.request(request, callback: callback)
         }
     }
 }
