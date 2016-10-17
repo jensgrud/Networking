@@ -99,9 +99,10 @@ public class HTTPClient : NSObject {
         if let info = NSBundle.mainBundle().infoDictionary {
             let executable = info[kCFBundleExecutableKey as String] as? String ?? "Unknown"
             let bundle = info[kCFBundleIdentifierKey as String] as? String ?? "Unknown"
-            let version = info[kCFBundleVersionKey as String] as? String ?? "Unknown"
+            let appVersion = info["CFBundleShortVersionString"] as? String ?? "Unknown"
+            let appBuild = info[kCFBundleVersionKey as String] as? String ?? "Unknown"
             let os = NSProcessInfo.processInfo().operatingSystemVersionString
-            let userAgent = "\(executable)/\(bundle) (\(version); OS \(os))"
+            let userAgent = executable + "/" + appVersion + " (" + bundle + "; build:" + appBuild + "; " + os + ")"
             let mutableUserAgent = NSMutableString(string: userAgent) as CFMutableString
             
             let transform = NSString(string: "Any-Latin; Latin-ASCII; [:^ASCII:] Remove") as CFString
