@@ -66,6 +66,7 @@ public protocol AuthenticationStrategy: class {
     var retriesLimit: Int { get }
     
     func refreshToken(completionHandler: (error :NSError?, token: String?) -> Void)
+    func refreshTokenLimitReached() -> Void
 }
 
 public enum ContentType: String {
@@ -215,6 +216,7 @@ public class HTTPClient : NSObject {
         guard authenticationStrategy.retries < authenticationStrategy.retriesLimit + 1 else {
             
             authenticationStrategy.retries = 0
+            authenticationStrategy.refreshTokenLimitReached()
             
             self.cancelAll()
             
