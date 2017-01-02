@@ -89,15 +89,7 @@ public enum MimeType: String {
 
 public class HTTPClient : NSObject {
  
-    private static let kTimeSinceLast = "com.networking.time-since-last"
     private static let kUserAgentHeader = "User-Agent"
-    
-    private var updateTimeintervalThreshold :Double!
-    private var lastUpdate :NSDate? = NSUserDefaults.standardUserDefaults().objectForKey(kTimeSinceLast) as? NSDate {
-        didSet {
-            NSUserDefaults.standardUserDefaults().setObject(lastUpdate, forKey: HTTPClient.kTimeSinceLast)
-        }
-    }
     
     private static let userAgent: String = {
         let httpClient = "HTTP client"
@@ -191,20 +183,6 @@ public class HTTPClient : NSObject {
         }
         
         self.callbacks[task.task.taskIdentifier] = callback
-
-        // Finish request before starting others, if reaching threshold
-        guard let lastCheck = lastUpdate where fabs(lastCheck.timeIntervalSinceNow) > updateTimeintervalThreshold else {
-            return task
-        }
-        
-        self.lastUpdate = NSDate()
-        
-        self.suspendAll()
-        
-        task.response(completionHandler: { (_, _, _, _) in
-            
-            self.resumeAll()
-        })
         
         return task
     }
