@@ -58,6 +58,10 @@ public protocol API {
     var parameters: [String: AnyObject]? { get }
 }
 
+public protocol Logging: class {
+    func logEvent(event :String, error :NSError?) -> Void
+}
+
 public protocol AuthenticationStrategy: class {
     
     var authenticationHeader: String { get set }
@@ -115,6 +119,7 @@ public class HTTPClient : NSObject {
     }()
     
     public var router :Router?
+    public var logging :Logging?
     public var authenticationStrategy :AuthenticationStrategy?
 
     public static let sharedInstance :HTTPClient = {
@@ -124,11 +129,10 @@ public class HTTPClient : NSObject {
     private var callbacks :[Int:HTTPClientCallback] = [:]
     private var pendingRequests :[Int:NSURLSessionTask] = [:]
     
-    public init(authenticationStrategy :AuthenticationStrategy? = nil, router :Router? = nil, updateTimeintervalThreshold :Double = 60 * 60 * 2) {
+    public init(authenticationStrategy :AuthenticationStrategy? = nil, router :Router? = nil, logging :Logging? = nil) {
         self.router = router
         self.authenticationStrategy = authenticationStrategy
-        self.updateTimeintervalThreshold = updateTimeintervalThreshold
-        self.lastUpdate = NSDate.distantPast()
+        self.logging = logging
     }
     
     // MARK: Manager
@@ -210,7 +214,14 @@ public class HTTPClient : NSObject {
     public func performAuthentication(task :NSURLSessionTask? = nil, suspend :Bool = true, completionHandler: HTTPClientCallback, authenticationCallback:(NSError? -> Void)? = nil) {
         
         guard let authenticationStrategy = authenticationStrategy else {
-            return
+            
+            let error = NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"missing authentication strategy"])
+            
+            if let logging = self.logging {
+                logging.logEvent("Authentication limit reached", error: error)
+            }
+            
+            return completionHandler(statusCode: NSURLError.UserCancelledAuthentication.rawValue, data: nil, error: error)
         }
         
         guard authenticationStrategy.retries < authenticationStrategy.retriesLimit + 1 else {
@@ -220,7 +231,13 @@ public class HTTPClient : NSObject {
             
             self.cancelAll()
             
-            return completionHandler(statusCode: NSURLError.UserCancelledAuthentication.rawValue, data: nil, error: NSError(domain: "", code: 503, userInfo: ["message":"authentication limit reached"]))
+            let error = NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"authentication limit reached"])
+            
+            if let logging = self.logging {
+                logging.logEvent("Authentication limit reached", error: error)
+            }
+            
+            return completionHandler(statusCode: NSURLError.UserCancelledAuthentication.rawValue, data: nil, error: error)
         }
         
         guard !authenticationStrategy.isRefreshing else {
@@ -253,7 +270,11 @@ public class HTTPClient : NSObject {
                     
                     self.resumeAll()
                     
-                    completionHandler(statusCode: NSURLError.UserCancelledAuthentication.rawValue, data: nil, error: error)
+                    if let logging = self.logging {
+                        logging.logEvent("Authentication error", error: error)
+                    }
+                    
+                    completionHandler(statusCode: NSURLErrorCancelled, data: nil, error: error)
                     
                 default:
                     
@@ -302,6 +323,10 @@ public class HTTPClient : NSObject {
             
             let error = response.result.error
             
+            if let logging = logging {
+                logging.logEvent("Network error", error: error)
+            }
+            
             return completionHandler(statusCode: error?.code, data: response.data, error: error)
         }
         
@@ -314,6 +339,10 @@ public class HTTPClient : NSObject {
             
             self.callbacks[request.task.taskIdentifier] = nil
             
+            if let logging = logging {
+                logging.logEvent("Network error", error: response.result.error)
+            }
+            
             completionHandler(statusCode: statusCode, data: response.data, error: response.result.error)
         }
     }
@@ -323,7 +352,7 @@ public class HTTPClient : NSObject {
     public func uploadImage(image :UIImage, request :URLRequestConvertible, name :String = "file", filename :String = "filename.jpeg", mimeType :MimeType = .JPEG, callback: HTTPClientCallback) {
         
         guard let data = UIImageJPEGRepresentation(image, 0.8) else {
-            return callback(statusCode: -1, data: nil, error: NSError(domain: "", code: 502, userInfo: ["message":"invalid data"]))
+            return callback(statusCode: -1, data: nil, error: NSError(domain: "", code: 502, userInfo: [NSLocalizedDescriptionKey:"invalid data"]))
         }
         
         return self.uploadData(data, request: request, name: name, filename: filename, mimeType: mimeType, callback: callback)
@@ -332,7 +361,7 @@ public class HTTPClient : NSObject {
     public func uploadVideo(path :String, request :URLRequestConvertible, name :String = "file", filename :String = "filename.mpeg", mimeType :MimeType = .MPEG, callback: HTTPClientCallback) {
         
         guard let data = NSData(contentsOfFile: path) else {
-            return callback(statusCode: -1, data: nil, error: NSError(domain: "", code: 502, userInfo: ["message":"invalid data"]))
+            return callback(statusCode: -1, data: nil, error: NSError(domain: "", code: 502, userInfo: [NSLocalizedDescriptionKey:"invalid data"]))
         }
         
         return self.uploadData(data, request: request, name: name, filename: filename, mimeType: mimeType, callback: callback)
@@ -360,7 +389,7 @@ public class HTTPClient : NSObject {
                     
                 case .Failure(let encodingError):
                     
-                    callback(statusCode: -1, data: nil, error: NSError(domain: "", code: 503, userInfo: ["message":"encoding failed"]))
+                    callback(statusCode: -1, data: nil, error: NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"encoding failed \(encodingError)"]))
                 }
         }
     }
