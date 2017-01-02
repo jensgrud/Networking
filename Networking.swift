@@ -408,7 +408,7 @@ public class HTTPClient : NSObject {
             }
         }
         
-        while let (identifier, task) = self.pendingRequests.popFirst() {
+        while let (_, task) = self.pendingRequests.popFirst() {
             
             if let callback = self.callbacks[task.taskIdentifier] {
                 callback(statusCode: NSURLError.Cancelled.rawValue, data: nil, error: error)
@@ -477,14 +477,17 @@ public class HTTPClient : NSObject {
             for task in downloadTasks {
                 self.resume(task, identifier: task.taskIdentifier, accessToken: accessToken)
             }
+            
+            while let (identifier, task) = self.pendingRequests.popFirst() {
+                self.resume(task, identifier: identifier, accessToken: accessToken)
+            }
         }
         
-        while let (identifier, task) = self.pendingRequests.popFirst() {
-            self.resume(task, identifier: identifier, accessToken: accessToken)
-        }
     }
     
     private func resume(task :NSURLSessionTask, identifier :Int, accessToken :String? = nil) {
+        
+        self.pendingRequests[task.taskIdentifier] = nil
         
         guard let token = accessToken else {
             return task.resume()
