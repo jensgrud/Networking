@@ -1,8 +1,8 @@
 Pod::Spec.new do |s|
   s.name = 'Networking'
-  s.version = '0.2'
+  s.version = '0.3'
   s.license = { :type => "MIT", :file => "LICENSE" }
-  s.summary = 'HTTP Client for seamless authentication handling with retries and pausing/resuming of requests'
+  s.summary = 'Alamofire based HTTP Client for seamless authentication handling with retries and pausing/resuming of requests'
   s.homepage = 'https://github.com/jensgrud/Networking'
   s.authors = { 'Jens Grud' => 'jens@heapsapp.com' }
   s.source = { :git => 'https://github.com/jensgrud/Networking.git', :tag => s.version }
