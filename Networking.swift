@@ -191,6 +191,10 @@ public class HTTPClient : NSObject {
     
     public func performAuthentication(task :NSURLSessionTask? = nil, suspend :Bool = true, completionHandler: HTTPClientCallback, authenticationCallback:(NSError? -> Void)? = nil) {
         
+        if let task = task {
+            task.cancel()
+        }
+        
         guard let authenticationStrategy = authenticationStrategy else {
             
             let error = NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"missing authentication strategy"])
@@ -278,20 +282,21 @@ public class HTTPClient : NSObject {
             
             request.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
             
-            self.request(request, callback: completionHandler)
-                .response(completionHandler: { (request, response, data, error) in
+            self.request(request, callback: completionHandler).response { (request, response, data, error) in
                     
-                    guard response?.statusCode == 200 else {
-                        return
-                    }
-                    
-                    authenticationStrategy.retries = 0
-                    
-                    if let iden = task?.taskIdentifier {
-                        self.callbacks[iden] = nil
-                        self.pendingRequests[iden] = nil
-                    }
-                })
+                guard response?.statusCode == 200 else {
+                    return
+                }
+                
+                authenticationStrategy.retries = 0
+                
+                guard let iden = task?.taskIdentifier else {
+                    return
+                }
+                
+                self.callbacks[iden] = nil
+                self.pendingRequests[iden] = nil
+            }
         }
     }
     
@@ -311,7 +316,7 @@ public class HTTPClient : NSObject {
         switch statusCode {
         case 401:
             
-            performAuthentication(request.task, completionHandler: completionHandler)
+            self.performAuthentication(request.task, completionHandler: completionHandler)
             
         default:
             
