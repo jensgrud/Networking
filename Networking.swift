@@ -206,7 +206,7 @@ public class HTTPClient : NSObject {
             return completionHandler(statusCode: NSURLError.UserCancelledAuthentication.rawValue, data: nil, error: error)
         }
         
-        guard authenticationStrategy.retries < authenticationStrategy.retriesLimit + 1 else {
+        guard authenticationStrategy.retries < authenticationStrategy.retriesLimit else {
             
             authenticationStrategy.retries = 0
             authenticationStrategy.refreshTokenLimitReached()
