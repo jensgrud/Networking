@@ -191,16 +191,16 @@ public class HTTPClient : NSObject {
     
     public func performAuthentication(task :NSURLSessionTask? = nil, suspend :Bool = true, completionHandler: HTTPClientCallback, authenticationCallback:(NSError? -> Void)? = nil) {
         
-        if let task = task {
-            task.cancel()
-        }
-        
         guard let authenticationStrategy = authenticationStrategy else {
             
             let error = NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"missing authentication strategy"])
             
             if let logging = self.logging {
                 logging.logEvent("Authentication limit reached", error: error)
+            }
+            
+            if let task = task {
+                task.cancel()
             }
             
             return completionHandler(statusCode: NSURLError.UserCancelledAuthentication.rawValue, data: nil, error: error)
@@ -243,6 +243,12 @@ public class HTTPClient : NSObject {
                 callback(error)
             }
             
+            if let task = task {
+                self.callbacks[task.taskIdentifier] = nil
+                self.pendingRequests[task.taskIdentifier] = nil
+                task.cancel()
+            }
+            
             if let error = error {
                 
                 switch error.code {
@@ -270,6 +276,8 @@ public class HTTPClient : NSObject {
                 return
             }
             
+            authenticationStrategy.retries = 0
+            
             if let token = token, router = self.router {
                 router.accessToken = token
             }
@@ -282,21 +290,7 @@ public class HTTPClient : NSObject {
             
             request.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
             
-            self.request(request, callback: completionHandler).response { (request, response, data, error) in
-                    
-                guard response?.statusCode == 200 else {
-                    return
-                }
-                
-                authenticationStrategy.retries = 0
-                
-                guard let iden = task?.taskIdentifier else {
-                    return
-                }
-                
-                self.callbacks[iden] = nil
-                self.pendingRequests[iden] = nil
-            }
+            self.request(request, callback: completionHandler)
         }
     }
     
@@ -311,6 +305,10 @@ public class HTTPClient : NSObject {
             }
             
             return completionHandler(statusCode: error?.code, data: response.data, error: error)
+        }
+        
+        if let error = response.result.error where error.code == NSURLError.Cancelled.rawValue {
+            return
         }
         
         switch statusCode {
@@ -492,7 +490,7 @@ public class HTTPClient : NSObject {
     
     private func resume(task :NSURLSessionTask, identifier :Int, accessToken :String? = nil) {
         
-        self.pendingRequests[task.taskIdentifier] = nil
+        self.pendingRequests[identifier] = nil
         
         guard let token = accessToken else {
             return task.resume()
