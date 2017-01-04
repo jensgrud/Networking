@@ -8,44 +8,44 @@
 
 import Alamofire
 
-public typealias HTTPMethod = Alamofire.Method
+public typealias HTTPMethod = Alamofire.HTTPMethod
 public typealias ParameterEncoding = Alamofire.ParameterEncoding
 
-public typealias HTTPClientCallback = (statusCode: Int?, data: NSData?, error: NSError?) -> Void
+public typealias HTTPClientCallback = (_ statusCode: Int?, _ data: Data?, _ error: Error?) -> Void
 
 public protocol Router :class {
 
-    var baseURL: NSURL { get set }
+    var baseURL: URL { get set }
     var accessToken: String? { get set }
 }
 
 extension Router {
     
-    public func buildRequest(path :String, method :HTTPMethod, accept :ContentType?, encoding :ParameterEncoding, parameters :[String: AnyObject]?, authenticationHeader :String = "Authentication") -> NSMutableURLRequest {
+    public func buildRequest(path :String, method :HTTPMethod, accept :ContentType?, encoding :ParameterEncoding, parameters :[String: AnyObject]?, authenticationHeader :String = "Authentication") -> URLRequest? {
         
-        #if swift(>=2.3)
-            let baseURL = self.baseURL.URLByAppendingPathComponent(path)!
-        #else
-            let baseURL = self.baseURL.URLByAppendingPathComponent(path)
-        #endif
+        let baseURL = self.baseURL.appendingPathComponent(path)
         
-        let mutableURLRequest = NSMutableURLRequest(URL: baseURL)
-        mutableURLRequest.HTTPMethod = method.rawValue
+        var urlRequest = URLRequest(url: baseURL)
+        urlRequest.httpMethod = method.rawValue 
         
         if let token = self.accessToken {
-            mutableURLRequest.setValue(token, forHTTPHeaderField: authenticationHeader)
+            urlRequest.setValue(token, forHTTPHeaderField: authenticationHeader)
         }
         
         if let accept = accept {
-            mutableURLRequest.setValue(accept.rawValue, forHTTPHeaderField: "Accept")
+            urlRequest.setValue(accept.rawValue, forHTTPHeaderField: "Accept")
         }
         
-        return encoding.encode(mutableURLRequest, parameters: parameters).0   
+        do {
+            return try encoding.encode(urlRequest, with: parameters)
+        } catch {
+            return nil 
+        }
     }
     
-    public func buildRequest(api :API, authenticationHeader :String = "Authentication") -> NSMutableURLRequest {
+    public func buildRequest(api :API, authenticationHeader :String = "Authentication") -> URLRequest? {
         
-        return self.buildRequest(api.path, method: api.method, accept: api.accept, encoding: api.encoding, parameters: api.parameters, authenticationHeader: authenticationHeader)
+        return self.buildRequest(path: api.path, method: api.method, accept: api.accept, encoding: api.encoding, parameters: api.parameters, authenticationHeader: authenticationHeader)
     }
 }
 
@@ -59,7 +59,7 @@ public protocol API {
 }
 
 public protocol Logging: class {
-    func logEvent(event :String, error :NSError?) -> Void
+    func logEvent(event :String, error :Error?) -> Void
 }
 
 public protocol AuthenticationStrategy: class {
@@ -69,7 +69,7 @@ public protocol AuthenticationStrategy: class {
     var retries: Int { get set }
     var retriesLimit: Int { get }
     
-    func refreshToken(completionHandler: (error :NSError?, token: String?) -> Void)
+    func refreshToken(_ completionHandler: @escaping (_ error: NSError?, _ token: String?) -> Void)
     func refreshTokenLimitReached() -> Void
 }
 
@@ -93,19 +93,16 @@ public class HTTPClient : NSObject {
     
     private static let userAgent: String = {
         let httpClient = "HTTP client"
-        if let info = NSBundle.mainBundle().infoDictionary {
+        if let info = Bundle.main.infoDictionary {
+            
             let executable = info[kCFBundleExecutableKey as String] as? String ?? "Unknown"
             let bundle = info[kCFBundleIdentifierKey as String] as? String ?? "Unknown"
             let appVersion = info["CFBundleShortVersionString"] as? String ?? "Unknown"
             let appBuild = info[kCFBundleVersionKey as String] as? String ?? "Unknown"
-            let os = NSProcessInfo.processInfo().operatingSystemVersionString
+            let os = ProcessInfo.processInfo.operatingSystemVersionString
             let userAgent = executable + "/" + appVersion + " (" + bundle + "; build:" + appBuild + "; " + os + ")"
-            let mutableUserAgent = NSMutableString(string: userAgent) as CFMutableString
             
-            let transform = NSString(string: "Any-Latin; Latin-ASCII; [:^ASCII:] Remove") as CFString
-            if CFStringTransform(mutableUserAgent, UnsafeMutablePointer<CFRange>(nil), transform, false) {
-                return mutableUserAgent as String
-            }
+            return userAgent
         }
         return httpClient
     }()
@@ -129,24 +126,27 @@ public class HTTPClient : NSObject {
     
     // MARK: Manager
     
-    private let manager: Manager = {
+    private let manager: SessionManager = {
         
-        var defaultHeaders = Alamofire.Manager.sharedInstance.session.configuration.HTTPAdditionalHeaders ?? [:]
+        var defaultHeaders = SessionManager.default.session.configuration.httpAdditionalHeaders ?? [:]
         defaultHeaders[kUserAgentHeader] = userAgent
         
-        let configuration = NSURLSessionConfiguration.defaultSessionConfiguration()
-        configuration.HTTPAdditionalHeaders = defaultHeaders
+        let configuration = URLSessionConfiguration.default
+        configuration.httpAdditionalHeaders = defaultHeaders
         
-        let manager = Manager(configuration: configuration)
+        let manager = SessionManager(configuration: configuration)
         
         return manager
     }()
     
     // MARK: Fire request
     
-    public func request(api :API, callback: HTTPClientCallback) -> Request? {
+    public func request(api :API, callback: @escaping HTTPClientCallback) -> Request? {
      
         guard let router = self.router else {
+            
+            callback(URLError.unknown.rawValue, nil, NSError(domain: "", code: 501, userInfo: [NSLocalizedDescriptionKey:"missing router"]))
+            
             return nil
         }
         
@@ -156,54 +156,66 @@ public class HTTPClient : NSObject {
             authenticationHeader = authenticationStrategy.authenticationHeader
         }
 
-        let request = router.buildRequest(api, authenticationHeader: authenticationHeader)
+        guard let request = router.buildRequest(api: api, authenticationHeader: authenticationHeader) else {
+            
+            callback(URLError.unknown.rawValue, nil, NSError(domain: "", code: 501, userInfo: [NSLocalizedDescriptionKey:"could not build request"]))
+            
+            return nil
+        }
         
-        return self.request(request, callback: callback)
+        return self.request(request: request, callback: callback)
     }
     
-    public func request(request :NSURLRequest, callback: HTTPClientCallback) -> Request {
+    public func request(request :URLRequest, callback: @escaping HTTPClientCallback) -> Request {
         
         let task = manager.request(request)
+        
+        guard let subTask = task.task else {
+            
+            callback(URLError.unknown.rawValue, nil, NSError(domain: "", code: 501, userInfo: [NSLocalizedDescriptionKey:"missing url session task"]))
+                        
+            return task
+        }
         
         task.validate().responseData { (response) in
             
             let statusCode = response.response?.statusCode
             
             guard response.result.isSuccess else {
-                return self.handleError(task, response: response, completionHandler: callback)
+                return self.handleError(request: task, response: response, completionHandler: callback)
             }
             
-            callback(statusCode: statusCode, data: response.data, error: response.result.error)
+            callback(statusCode, response.data, response.result.error)
 
-            self.callbacks[task.task.taskIdentifier] = nil
+            self.callbacks[subTask.taskIdentifier] = nil
         }
         
         if !manager.startRequestsImmediately {
-            self.pendingRequests[task.task.taskIdentifier] = task.task
+            self.pendingRequests[subTask.taskIdentifier] = task.task
         }
         
-        self.callbacks[task.task.taskIdentifier] = callback
+        self.callbacks[subTask.taskIdentifier] = callback
         
         return task
     }
     
     // MARK: - Authentication
     
-    public func performAuthentication(task :NSURLSessionTask? = nil, suspend :Bool = true, completionHandler: HTTPClientCallback, authenticationCallback:(NSError? -> Void)? = nil) {
+    public func performAuthentication(task :URLSessionTask? = nil, suspend :Bool = true, completionHandler: @escaping HTTPClientCallback, authenticationCallback:((Error?) -> Void)? = nil) {
         
         guard let authenticationStrategy = authenticationStrategy else {
             
             let error = NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"missing authentication strategy"])
             
             if let logging = self.logging {
-                logging.logEvent("Authentication limit reached", error: error)
+                logging.logEvent(event: "Authentication limit reached", error: error)
             }
             
             if let task = task {
                 task.cancel()
             }
             
-            return completionHandler(statusCode: NSURLError.UserCancelledAuthentication.rawValue, data: nil, error: error)
+            return completionHandler(URLError.userCancelledAuthentication.rawValue, nil, error)
         }
         
         guard authenticationStrategy.retries < authenticationStrategy.retriesLimit else {
@@ -216,10 +228,10 @@ public class HTTPClient : NSObject {
             let error = NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"authentication limit reached"])
             
             if let logging = self.logging {
-                logging.logEvent("Authentication limit reached", error: error)
+                logging.logEvent(event: "Authentication limit reached", error: error)
             }
             
-            return completionHandler(statusCode: NSURLError.UserCancelledAuthentication.rawValue, data: nil, error: error)
+            return completionHandler(URLError.userCancelledAuthentication.rawValue, nil, error)
         }
         
         guard !authenticationStrategy.isRefreshing else {
@@ -251,7 +263,7 @@ public class HTTPClient : NSObject {
             
             if let error = error {
                 
-                switch error.code {
+                switch error._code {
                 case 504:
                     
                     authenticationStrategy.retries = 0
@@ -259,17 +271,15 @@ public class HTTPClient : NSObject {
                     self.resumeAll()
                     
                     if let logging = self.logging {
-                        logging.logEvent("Authentication error", error: error)
+                        logging.logEvent(event: "Authentication error", error: error)
                     }
                     
-                    completionHandler(statusCode: NSURLErrorCancelled, data: nil, error: error)
+                    completionHandler(NSURLErrorCancelled, nil, error)
                     
                 default:
                     
-                    let delay = dispatch_time(DISPATCH_TIME_NOW, Int64(3 * Double(NSEC_PER_SEC)))
-                    
-                    dispatch_after(delay, dispatch_get_main_queue()) {
-                        self.performAuthentication(task, completionHandler: completionHandler, authenticationCallback: authenticationCallback)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        self.performAuthentication(task: task, completionHandler: completionHandler, authenticationCallback: authenticationCallback)
                     }
                 }
                 
@@ -278,99 +288,103 @@ public class HTTPClient : NSObject {
             
             authenticationStrategy.retries = 0
             
-            if let token = token, router = self.router {
+            if let token = token, let router = self.router {
                 router.accessToken = token
             }
             
-            self.resumeAll(token)
+            self.resumeAll(accessToken: token)
             
-            guard let request = task?.originalRequest?.URLRequest else {
+            guard var request = task?.originalRequest?.urlRequest else {
                 return
             }
             
             request.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
             
-            self.request(request, callback: completionHandler)
+            self.request(request: request, callback: completionHandler)
         }
     }
     
-    private func handleError(request :Request, response: Response<NSData, NSError>, completionHandler: HTTPClientCallback) {
+    private func handleError(request :Request, response: DataResponse<Data>, completionHandler: @escaping HTTPClientCallback) {
         
         guard let statusCode = response.response?.statusCode else {
             
             let error = response.result.error
             
             if let logging = logging {
-                logging.logEvent("Network error", error: error)
+                logging.logEvent(event: "Network error", error: error)
             }
             
-            return completionHandler(statusCode: error?.code, data: response.data, error: error)
+            return completionHandler(error?._code, response.data, error)
         }
         
-        if let error = response.result.error where error.code == NSURLError.Cancelled.rawValue {
+        if let error = response.result.error, error._code == URLError.cancelled.rawValue {
             return
         }
         
         switch statusCode {
         case 401:
             
-            self.performAuthentication(request.task, completionHandler: completionHandler)
+            self.performAuthentication(task: request.task, completionHandler: completionHandler)
             
         default:
             
-            self.callbacks[request.task.taskIdentifier] = nil
-            
-            if let logging = logging {
-                logging.logEvent("Network error", error: response.result.error)
+            if let task = request.task {
+                self.callbacks[task.taskIdentifier] = nil
             }
             
-            completionHandler(statusCode: statusCode, data: response.data, error: response.result.error)
+            if let logging = logging {
+                logging.logEvent(event: "Network error", error: response.result.error)
+            }
+            
+            completionHandler(statusCode, response.data, response.result.error)
         }
     }
     
     // MARK: - Upload
     
-    public func uploadImage(image :UIImage, request :URLRequestConvertible, name :String = "file", filename :String = "filename.jpeg", mimeType :MimeType = .JPEG, callback: HTTPClientCallback) {
+    public func uploadImage(image :UIImage, request :URLRequestConvertible, name :String = "file", filename :String = "filename.jpeg", mimeType :MimeType = .JPEG, callback: @escaping HTTPClientCallback) {
         
         guard let data = UIImageJPEGRepresentation(image, 0.8) else {
-            return callback(statusCode: -1, data: nil, error: NSError(domain: "", code: 502, userInfo: [NSLocalizedDescriptionKey:"invalid data"]))
+            return callback(-1, nil, NSError(domain: "", code: 502, userInfo: [NSLocalizedDescriptionKey:"invalid data"]))
         }
         
-        return self.uploadData(data, request: request, name: name, filename: filename, mimeType: mimeType, callback: callback)
+        return self.uploadData(data: data, request: request, name: name, filename: filename, mimeType: mimeType, callback: callback)
     }
     
-    public func uploadVideo(path :String, request :URLRequestConvertible, name :String = "file", filename :String = "filename.mpeg", mimeType :MimeType = .MPEG, callback: HTTPClientCallback) {
+    public func uploadVideo(path :String, request :URLRequestConvertible, name :String = "file", filename :String = "filename.mpeg", mimeType :MimeType = .MPEG, callback: @escaping HTTPClientCallback) {
         
-        guard let data = NSData(contentsOfFile: path) else {
-            return callback(statusCode: -1, data: nil, error: NSError(domain: "", code: 502, userInfo: [NSLocalizedDescriptionKey:"invalid data"]))
+        guard let pathURL = URL(string: path) else {
+            return callback(-1, nil, NSError(domain: "", code: 502, userInfo: [NSLocalizedDescriptionKey:"invalid path"]))
         }
         
-        return self.uploadData(data, request: request, name: name, filename: filename, mimeType: mimeType, callback: callback)
+        let data = try! Data(contentsOf: pathURL)
+        
+        return self.uploadData(data: data, request: request, name: name, filename: filename, mimeType: mimeType, callback: callback)
     }
     
-    public func uploadData(data :NSData, request :URLRequestConvertible, name :String, filename :String, mimeType :MimeType, callback: HTTPClientCallback) {
+    public func uploadData(data :Data, request :URLRequestConvertible, name :String, filename :String, mimeType :MimeType, callback: @escaping HTTPClientCallback) {
         
-        self.manager.upload(request, multipartFormData: { (formdata) in
+        self.manager.upload(multipartFormData: { (formdata) in
             
-            formdata.appendBodyPart(data: data, name: name, fileName: filename, mimeType: mimeType.rawValue)
+            formdata.append(data, withName: name, fileName: filename, mimeType: mimeType.rawValue)
             
-            }) { (result) in
-                
+        }, with: request) { (result) in
+            
                 switch result {
-                case .Success(let task, _, _):
+                case .success(let task, _, _):
                     
                     task.responseData(completionHandler: { (response) in
                         
                         guard response.result.isSuccess else {
-                            return self.handleError(task, response: response, completionHandler: callback)
+                            return self.handleError(request: task, response: response, completionHandler: callback)
                         }
                         
-                        callback(statusCode: response.response?.statusCode, data: response.data, error: response.result.error)
+                        callback(response.response?.statusCode, response.data, response.result.error)
                     })
                     
-                case .Failure(let encodingError):
+                case .failure(let encodingError):
                     
-                    callback(statusCode: -1, data: nil, error: NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"encoding failed \(encodingError)"]))
+                    callback(-1, nil, NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"encoding failed \(encodingError)"]))
                 }
         }
     }
@@ -386,7 +400,7 @@ public class HTTPClient : NSObject {
             for task in dataTasks {
                 
                 if let callback = self.callbacks[task.taskIdentifier] {
-                    callback(statusCode: NSURLError.Cancelled.rawValue, data: nil, error: error)
+                    callback(URLError.cancelled.rawValue, nil, error)
                 }
                 
                 task.cancel()
@@ -395,7 +409,7 @@ public class HTTPClient : NSObject {
             for task in uploadTasks {
                 
                 if let callback = self.callbacks[task.taskIdentifier] {
-                    callback(statusCode: NSURLError.Cancelled.rawValue, data: nil, error: error)
+                    callback(URLError.cancelled.rawValue, nil, error)
                 }
                 
                 task.cancel()
@@ -404,7 +418,7 @@ public class HTTPClient : NSObject {
             for task in downloadTasks {
                 
                 if let callback = self.callbacks[task.taskIdentifier] {
-                    callback(statusCode: NSURLError.Cancelled.rawValue, data: nil, error: error)
+                    callback(URLError.cancelled.rawValue, nil, error)
                 }
                 
                 task.cancel()
@@ -414,7 +428,7 @@ public class HTTPClient : NSObject {
         while let (_, task) = self.pendingRequests.popFirst() {
             
             if let callback = self.callbacks[task.taskIdentifier] {
-                callback(statusCode: NSURLError.Cancelled.rawValue, data: nil, error: error)
+                callback(URLError.cancelled.rawValue, nil, error)
             }
             
             task.cancel()
@@ -426,7 +440,7 @@ public class HTTPClient : NSObject {
         callbacks.removeAll()
     }
     
-    private func suspendAll(currentTask :NSURLSessionTask? = nil) {
+    private func suspendAll(currentTask :URLSessionTask? = nil) {
         
         manager.startRequestsImmediately = false
         
@@ -434,7 +448,7 @@ public class HTTPClient : NSObject {
             
             for task in dataTasks {
                 
-                if let current = currentTask where current.taskIdentifier == task.taskIdentifier {
+                if let current = currentTask, current.taskIdentifier == task.taskIdentifier {
                     continue
                 }
                 
@@ -444,7 +458,7 @@ public class HTTPClient : NSObject {
             
             for task in uploadTasks {
                 
-                if let current = currentTask where current.taskIdentifier == task.taskIdentifier {
+                if let current = currentTask, current.taskIdentifier == task.taskIdentifier {
                     continue
                 }
                 
@@ -454,7 +468,7 @@ public class HTTPClient : NSObject {
             
             for task in downloadTasks {
                 
-                if let current = currentTask where current.taskIdentifier == task.taskIdentifier {
+                if let current = currentTask, current.taskIdentifier == task.taskIdentifier {
                     continue
                 }
                 task.suspend()
@@ -470,25 +484,25 @@ public class HTTPClient : NSObject {
         manager.session.getTasksWithCompletionHandler { dataTasks, uploadTasks, downloadTasks in
             
             for task in dataTasks {
-                self.resume(task, identifier: task.taskIdentifier, accessToken: accessToken)
+                self.resume(task: task, identifier: task.taskIdentifier, accessToken: accessToken)
             }
             
             for task in uploadTasks {
-                self.resume(task, identifier: task.taskIdentifier, accessToken: accessToken)
+                self.resume(task: task, identifier: task.taskIdentifier, accessToken: accessToken)
             }
             
             for task in downloadTasks {
-                self.resume(task, identifier: task.taskIdentifier, accessToken: accessToken)
+                self.resume(task: task, identifier: task.taskIdentifier, accessToken: accessToken)
             }
             
             while let (identifier, task) = self.pendingRequests.popFirst() {
-                self.resume(task, identifier: identifier, accessToken: accessToken)
+                self.resume(task: task, identifier: identifier, accessToken: accessToken)
             }
         }
         
     }
     
-    private func resume(task :NSURLSessionTask, identifier :Int, accessToken :String? = nil) {
+    private func resume(task :URLSessionTask, identifier :Int, accessToken :String? = nil) {
         
         self.pendingRequests[identifier] = nil
         
@@ -496,7 +510,7 @@ public class HTTPClient : NSObject {
             return task.resume()
         }
         
-        guard let request = task.originalRequest?.URLRequest else {
+        guard var request = task.originalRequest?.urlRequest else {
             return task.resume()
         }
         
@@ -508,8 +522,8 @@ public class HTTPClient : NSObject {
             request.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
         }
         
-        self.request(request) { (statusCode, data, error) in
-            callback(statusCode: statusCode, data: data, error: error)
+        self.request(request: request) { (statusCode, data, error) in
+            callback(statusCode, data, error)
             
             self.callbacks[identifier] = nil
             

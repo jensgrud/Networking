@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name = 'Networking'
-  s.version = '0.3'
+  s.version = '0.4'
   s.license = { :type => "MIT", :file => "LICENSE" }
   s.summary = 'Alamofire based HTTP Client for seamless authentication handling with retries and pausing/resuming of requests'
   s.homepage = 'https://github.com/jensgrud/Networking'
