@@ -6,84 +6,74 @@
 //  Copyright © 2016 Heaps. All rights reserved.
 //
 
-import FBSDKLoginKit
 import Networking
 
-let authenticationData = [
-    "platform":"ios",
-    "os_version":UIDevice.currentDevice().systemVersion,
-    "timezone":NSTimeZone.systemTimeZone().name,
-]
+let baseTestURL = URL(string: "https://backend.example.com")!
 
-let fbAuthenticationStrategy = FBAuthenticationStrategy(authData: authenticationData)
+private let httpClient = HTTPClient(router: MyRouter())
 
-let httpClient = Networking.HTTPClient(authenticationStrategy: fbAuthenticationStrategy, router: MyRouter())
+public typealias HTTPClientCallback = (_ statusCode: Int?, _ data: Data?, _ error: Error?) -> Void
 
-class MyRouter :Networking.Router {
+extension HTTPClient {
     
-    var baseURL: NSURL = NSURL(string: "https://backend.example.com")! {
-        didSet {
+    @discardableResult
+    public func request(api :API, callback: @escaping HTTPClientCallback) -> DataRequest? {
+        
+        guard let task = self.request(api: api) else {
+            return nil
         }
+        
+        task.validate().responseData { (response) in
+            callback(response.response?.statusCode, response.data, response.result.error)
+        }
+        
+        return task
     }
+}
+
+let accessTokenKey = "access_token"
+let authenticationHeader = "X-Authentication-Header"
+
+class MyRouter :Router {
     
-    var OAuthToken: String? {
-        didSet {
-        }
+    var baseURL: URL = baseTestURL
+    lazy var authenticationStrategy :AuthenticationStrategy? = {
+        
+        return FBAuthenticationStrategy(router :self, authenticationHeader: authenticationHeader, authenticationDataProvider : FBAuthenticationStrategy.FacebookAuthProvider())
+    }()
+    
+    public func isAuthenticated() -> Bool {
+        // TODO: Have a look at this
+        return self.authenticationStrategy?.accessToken != nil
     }
 }
 
 enum MyAPI : API {
-    case Authenticate([String:AnyObject])
-    case UserCreate([String: AnyObject])
-    case UserRead(String)
-    case UserUpdate(String, [String: AnyObject])
-    case UserDestroy(String)
+    case dummy(String)
 }
 
 extension MyAPI {
     
     var path: String {
         switch self {
-        case .Authenticate:
-            return "/authenticate"
-        case .UserCreate:
-            return "/users"
-        case .UserRead(let userID):
-            return "/users/\(userID)"
-        case .UserUpdate(let userID, _):
-            return "/users/\(userID)"
-        case .UserDestroy(let userID):
-            return "/users/\(userID)"
+        case .dummy(let dummyString):
+            return "/dummy/\(dummyString)"
         }
     }
     var method: HTTPMethod {
         switch self {
-        case .Authenticate, .UserCreate:
-            return .POST
-        case .UserRead:
-            return .GET
-        case .UserUpdate:
-            return .PUT
-        case .UserDestroy:
-            return .DELETE
+        default:
+            return .get
         }
     }
     var encoding: ParameterEncoding {
         switch self {
-        case .Authenticate, UserCreate, UserUpdate:
-            return .JSON
         default:
-            return .URL
+            return URLEncoding.default
         }
     }
     var parameters: [String: AnyObject]? {
         switch self {
-        case .Authenticate(let parameters):
-            return parameters
-        case .UserCreate(let parameters):
-            return parameters
-        case .UserUpdate(_, let parameters):
-             return parameters
         default:
             return nil
         }
@@ -96,73 +86,46 @@ extension MyAPI {
     }
 }
 
-public class FBAuthenticationStrategy: AuthenticationStrategy {
+open class FBAuthenticationStrategy: OAuth2Strategy {
     
-    public var authenticationHeader = "Authentication"
-    public var isRefreshing = false
-    public var retries = 0
-    public let retriesLimit = 3
+    // MARK: - Initialization
     
-    private var authData: [String:String]!
-    
-    let authClient = Networking.HTTPClient(router: MyRouter())
-    
-    public init(authData :[String:String]) {
-        self.authData = authData
+    override init(router :Router, accessToken: String = "", authenticationHeader: String, authenticationDataProvider: AuthenticationDataProvider) {
+        super.init(router :router,
+                   accessToken: accessToken,
+                   authenticationHeader: authenticationHeader,
+                   authenticationDataProvider: authenticationDataProvider)
     }
     
-    public func refreshToken(completionHandler: (error: NSError?, token: String?) -> Void) {
+    // MARK: - Auth data provider
+    
+    public class FacebookAuthProvider: AuthenticationDataProvider {
         
-        guard !isRefreshing else {
-            return
+        public var accessTokenKey: String = "access_token"
+        
+        public var accept: ContentType? = .JSON
+        public var encoding: ParameterEncoding = JSONEncoding.default
+        public var method: HTTPMethod = .post
+        public var path: String = "/authenticate"
+        public var parameters: [String : AnyObject]?
+        
+        public init(parameters :[String:AnyObject] = [:]) {
+            self.parameters = parameters
         }
         
-        guard let accessToken = FBSDKAccessToken.currentAccessToken() else {
-            return completionHandler(error: NSError(domain: "", code: 501, userInfo: ["message":"token missing"]), token: nil)
-        }
-        
-        guard let userId = accessToken.userID, oAuthToken = accessToken.tokenString else {
-            return completionHandler(error: NSError(domain: "", code: 502, userInfo: ["message":"invalid token data"]), token: nil)
-        }
-        
-        self.isRefreshing = true
-        
-        authData["fb_id"] = userId
-        authData["oauth_token"] = oAuthToken
-        
-        authClient.request(MyAPI.Authenticate(authData)) { (statusCode, data, error) in
+        public func generateAuthenticationData() -> [String : Any]? {
             
-            self.isRefreshing = false
-            
-            switch statusCode! {
-            case 200:
-                
-                guard let data = data else {
-                    return completionHandler(error: NSError(domain: "", code: 503, userInfo: ["message":"could not parse response"]), token: nil)
-                }
-                
-                var info :AnyObject!
-                
-                do {
-                    info  = try NSJSONSerialization.JSONObjectWithData(data, options: NSJSONReadingOptions())
-                } catch let error as NSError? {
-                    return completionHandler(error: error, token: nil)
-                }
-                
-                if let token = info["access_token"] as? String {
-                    
-                    completionHandler(error: nil, token: token)
-                }
-                else {
-                    
-                    completionHandler(error: NSError(domain: "", code: 504, userInfo: ["message":"token missing"]), token: nil)
-                }
-                
-            default:
-                
-                completionHandler(error:
-                    NSError(domain: "", code: 505, userInfo: ["message":"request failed"]), token: nil)
+            if var parameters = self.parameters {
+                parameters["fb_id"] = "123" as AnyObject?
+                parameters["oauth_token"] = "123" as AnyObject?
             }
+            
+            return self.parameters
         }
+    }
+    
+    override open func refreshTokenLimitReached() {
+        super.refreshTokenLimitReached()
     }
 }
+

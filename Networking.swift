@@ -11,26 +11,33 @@ import Alamofire
 public typealias HTTPMethod = Alamofire.HTTPMethod
 public typealias ParameterEncoding = Alamofire.ParameterEncoding
 
-public typealias HTTPClientCallback = (_ statusCode: Int?, _ data: Data?, _ error: Error?) -> Void
-
-public protocol Router :class {
+public protocol Router :RequestAdapter {
+    
+    func isAuthenticated() -> Bool
 
     var baseURL: URL { get set }
-    var accessToken: String? { get set }
+    var authenticationStrategy :AuthenticationStrategy? { get }
 }
 
 extension Router {
     
-    public func buildRequest(path :String, method :HTTPMethod, accept :ContentType?, encoding :ParameterEncoding, parameters :[String: AnyObject]?, authenticationHeader :String = "Authentication") -> URLRequest? {
+    public func adapt(_ urlRequest: URLRequest) throws -> URLRequest {
+        
+        var urlRequest = urlRequest
+        
+        if let strategy = self.authenticationStrategy {
+            urlRequest.setValue(strategy.accessToken, forHTTPHeaderField: strategy.authenticationHeader)
+        }
+        
+        return urlRequest
+    }
+    
+    public func buildRequest(path :String, method :HTTPMethod, accept :ContentType?, encoding :ParameterEncoding, parameters :[String: AnyObject]?) -> URLRequest? {
         
         let baseURL = self.baseURL.appendingPathComponent(path)
         
         var urlRequest = URLRequest(url: baseURL)
         urlRequest.httpMethod = method.rawValue 
-        
-        if let token = self.accessToken {
-            urlRequest.setValue(token, forHTTPHeaderField: authenticationHeader)
-        }
         
         if let accept = accept {
             urlRequest.setValue(accept.rawValue, forHTTPHeaderField: "Accept")
@@ -43,9 +50,9 @@ extension Router {
         }
     }
     
-    public func buildRequest(api :API, authenticationHeader :String = "Authentication") -> URLRequest? {
+    public func buildRequest(api :API) -> URLRequest? {
         
-        return self.buildRequest(path: api.path, method: api.method, accept: api.accept, encoding: api.encoding, parameters: api.parameters, authenticationHeader: authenticationHeader)
+        return self.buildRequest(path: api.path, method: api.method, accept: api.accept, encoding: api.encoding, parameters: api.parameters)
     }
 }
 
@@ -62,15 +69,29 @@ public protocol Logging: class {
     func logEvent(event :String, error :Error?) -> Void
 }
 
-public protocol AuthenticationStrategy: class {
+public typealias RequestRetryCompletion = (_ shouldRetry: Bool, _ timeDelay: TimeInterval) -> Void
+
+public protocol AuthenticationStrategy: RequestRetrier {
     
-    var authenticationHeader: String { get set }
+    var router :Router { get }
+    
+    var accessToken: String { get set }
+    var authenticationHeader: String { get }
+    
     var isRefreshing: Bool { get }
     var retries: Int { get set }
     var retriesLimit: Int { get }
     
-    func refreshToken(_ completionHandler: @escaping (_ error: NSError?, _ token: String?) -> Void)
-    func refreshTokenLimitReached() -> Void
+    var authenticationDataProvider :AuthenticationDataProvider { get }
+    
+    func should(_ manager: SessionManager, retry request: Request, with error: Error, completion: @escaping RequestRetryCompletion)
+}
+
+public protocol AuthenticationDataProvider: API {
+    
+    var accessTokenKey: String { get }
+    
+    func generateAuthenticationData() -> [String:Any]?
 }
 
 public enum ContentType: String {
@@ -87,7 +108,7 @@ public enum MimeType: String {
     case MPEG = "video/mp4"
 }
 
-public class HTTPClient : NSObject {
+public class HTTPClient {
  
     private static let kUserAgentHeader = "User-Agent"
     
@@ -107,26 +128,22 @@ public class HTTPClient : NSObject {
         return httpClient
     }()
     
-    public var router :Router?
+    public var router :Router
     public var logging :Logging?
-    public var authenticationStrategy :AuthenticationStrategy?
-
-    public static let sharedInstance :HTTPClient = {
-        return HTTPClient()
-    }()
     
-    private var callbacks :[Int:HTTPClientCallback] = [:]
-    private var pendingRequests :[Int:NSURLSessionTask] = [:]
+    // MARK: - Initialization
     
-    public init(authenticationStrategy :AuthenticationStrategy? = nil, router :Router? = nil, logging :Logging? = nil) {
+    public init(router :Router, logging :Logging? = nil) {
         self.router = router
-        self.authenticationStrategy = authenticationStrategy
         self.logging = logging
+        
+        self.manager.adapter = self.router
+        self.manager.retrier = self.router.authenticationStrategy
     }
     
-    // MARK: Manager
+    // MARK: - Manager
     
-    private let manager: SessionManager = {
+    open let manager: SessionManager = {
         
         var defaultHeaders = SessionManager.default.session.configuration.httpAdditionalHeaders ?? [:]
         defaultHeaders[kUserAgentHeader] = userAgent
@@ -139,230 +156,46 @@ public class HTTPClient : NSObject {
         return manager
     }()
     
-    // MARK: Fire request
+    // MARK: - Build request
     
-    public func request(api :API, callback: @escaping HTTPClientCallback) -> Request? {
+    @discardableResult
+    public func request(api :API) -> DataRequest? {
      
-        guard let router = self.router else {
-            
-            callback(URLError.unknown.rawValue, nil, NSError(domain: "", code: 501, userInfo: [NSLocalizedDescriptionKey:"missing router"]))
-            
+        guard let request = self.router.buildRequest(api: api) else {
             return nil
         }
         
-        var authenticationHeader :String = "Authenticate"
-        
-        if let authenticationStrategy = authenticationStrategy {
-            authenticationHeader = authenticationStrategy.authenticationHeader
-        }
-
-        guard let request = router.buildRequest(api: api, authenticationHeader: authenticationHeader) else {
-            
-            callback(URLError.unknown.rawValue, nil, NSError(domain: "", code: 501, userInfo: [NSLocalizedDescriptionKey:"could not build request"]))
-            
-            return nil
-        }
-        
-        return self.request(request: request, callback: callback)
-    }
-    
-    public func request(request :URLRequest, callback: @escaping HTTPClientCallback) -> Request {
-        
-        let task = manager.request(request)
-        
-        guard let subTask = task.task else {
-            
-            callback(URLError.unknown.rawValue, nil, NSError(domain: "", code: 501, userInfo: [NSLocalizedDescriptionKey:"missing url session task"]))
-                        
-            return task
-        }
-        
-        task.validate().responseData { (response) in
-            
-            let statusCode = response.response?.statusCode
-            
-            guard response.result.isSuccess else {
-                return self.handleError(request: task, response: response, completionHandler: callback)
-            }
-            
-            callback(statusCode, response.data, response.result.error)
-
-            self.callbacks[subTask.taskIdentifier] = nil
-        }
-        
-        if !manager.startRequestsImmediately {
-            self.pendingRequests[subTask.taskIdentifier] = task.task
-        }
-        
-        self.callbacks[subTask.taskIdentifier] = callback
-        
-        return task
-    }
-    
-    // MARK: - Authentication
-    
-    public func performAuthentication(task :URLSessionTask? = nil, suspend :Bool = true, completionHandler: @escaping HTTPClientCallback, authenticationCallback:((Error?) -> Void)? = nil) {
-        
-        guard let authenticationStrategy = authenticationStrategy else {
-            
-            let error = NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"missing authentication strategy"])
-            
-            if let logging = self.logging {
-                logging.logEvent(event: "Authentication limit reached", error: error)
-            }
-            
-            if let task = task {
-                task.cancel()
-            }
-            
-            return completionHandler(URLError.userCancelledAuthentication.rawValue, nil, error)
-        }
-        
-        guard authenticationStrategy.retries < authenticationStrategy.retriesLimit else {
-            
-            authenticationStrategy.retries = 0
-            authenticationStrategy.refreshTokenLimitReached()
-            
-            self.cancelAll()
-            
-            let error = NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"authentication limit reached"])
-            
-            if let logging = self.logging {
-                logging.logEvent(event: "Authentication limit reached", error: error)
-            }
-            
-            return completionHandler(URLError.userCancelledAuthentication.rawValue, nil, error)
-        }
-        
-        guard !authenticationStrategy.isRefreshing else {
-            
-            if let task = task {
-                self.pendingRequests[task.taskIdentifier] = task
-            }
-            
-            return
-        }
-        
-        if suspend {
-            self.suspendAll()
-        }
-
-        authenticationStrategy.refreshToken { (error, token) in
-            
-            authenticationStrategy.retries = authenticationStrategy.retries + 1
-            
-            if let callback = authenticationCallback {
-                callback(error)
-            }
-            
-            if let task = task {
-                self.callbacks[task.taskIdentifier] = nil
-                self.pendingRequests[task.taskIdentifier] = nil
-                task.cancel()
-            }
-            
-            if let error = error {
-                
-                switch error._code {
-                case 504:
-                    
-                    authenticationStrategy.retries = 0
-                    
-                    self.resumeAll()
-                    
-                    if let logging = self.logging {
-                        logging.logEvent(event: "Authentication error", error: error)
-                    }
-                    
-                    completionHandler(NSURLErrorCancelled, nil, error)
-                    
-                default:
-                    
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                        self.performAuthentication(task: task, completionHandler: completionHandler, authenticationCallback: authenticationCallback)
-                    }
-                }
-                
-                return
-            }
-            
-            authenticationStrategy.retries = 0
-            
-            if let token = token, let router = self.router {
-                router.accessToken = token
-            }
-            
-            self.resumeAll(accessToken: token)
-            
-            guard var request = task?.originalRequest?.urlRequest else {
-                return
-            }
-            
-            request.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
-            
-            self.request(request: request, callback: completionHandler)
-        }
-    }
-    
-    private func handleError(request :Request, response: DataResponse<Data>, completionHandler: @escaping HTTPClientCallback) {
-        
-        guard let statusCode = response.response?.statusCode else {
-            
-            let error = response.result.error
-            
-            if let logging = logging {
-                logging.logEvent(event: "Network error", error: error)
-            }
-            
-            return completionHandler(error?._code, response.data, error)
-        }
-        
-        if let error = response.result.error, error._code == URLError.cancelled.rawValue {
-            return
-        }
-        
-        switch statusCode {
-        case 401:
-            
-            self.performAuthentication(task: request.task, completionHandler: completionHandler)
-            
-        default:
-            
-            if let task = request.task {
-                self.callbacks[task.taskIdentifier] = nil
-            }
-            
-            if let logging = logging {
-                logging.logEvent(event: "Network error", error: response.result.error)
-            }
-            
-            completionHandler(statusCode, response.data, response.result.error)
-        }
+        return self.manager.request(request)
     }
     
     // MARK: - Upload
     
-    public func uploadImage(image :UIImage, request :URLRequestConvertible, name :String = "file", filename :String = "filename.jpeg", mimeType :MimeType = .JPEG, callback: @escaping HTTPClientCallback) {
+    public typealias UploadCallback = (_ request :UploadRequest?, _ error :Error?) -> Void
+    
+    public func uploadImage(image :UIImage, request :URLRequestConvertible, name :String = "file", filename :String = "filename.jpeg", mimeType :MimeType = .JPEG, callback: @escaping UploadCallback) {
         
         guard let data = UIImageJPEGRepresentation(image, 0.8) else {
-            return callback(-1, nil, NSError(domain: "", code: 502, userInfo: [NSLocalizedDescriptionKey:"invalid data"]))
+            return callback(nil, NSError(domain: "", code: 502, userInfo: [NSLocalizedDescriptionKey:"invalid data"]))
         }
         
-        return self.uploadData(data: data, request: request, name: name, filename: filename, mimeType: mimeType, callback: callback)
+        self.uploadData(data: data, request: request, name: name, filename: filename, mimeType: mimeType, callback: callback)
     }
     
-    public func uploadVideo(path :String, request :URLRequestConvertible, name :String = "file", filename :String = "filename.mpeg", mimeType :MimeType = .MPEG, callback: @escaping HTTPClientCallback) {
+    public func uploadVideo(path :String, request :URLRequestConvertible, name :String = "file", filename :String = "filename.mpeg", mimeType :MimeType = .MPEG, callback: @escaping UploadCallback) {
         
         guard let pathURL = URL(string: path) else {
-            return callback(-1, nil, NSError(domain: "", code: 502, userInfo: [NSLocalizedDescriptionKey:"invalid path"]))
+            return callback(nil, NSError(domain: "", code: 502, userInfo: [NSLocalizedDescriptionKey:"invalid path"]))
         }
         
-        let data = try! Data(contentsOf: pathURL)
-        
-        return self.uploadData(data: data, request: request, name: name, filename: filename, mimeType: mimeType, callback: callback)
+        do {
+            let data = try Data(contentsOf: pathURL)
+            self.uploadData(data: data, request: request, name: name, filename: filename, mimeType: mimeType, callback: callback)
+        } catch (let e) {
+            callback(nil, e)
+        }
     }
     
-    public func uploadData(data :Data, request :URLRequestConvertible, name :String, filename :String, mimeType :MimeType, callback: @escaping HTTPClientCallback) {
+    public func uploadData(data :Data, request :URLRequestConvertible, name :String, filename :String, mimeType :MimeType, callback: @escaping UploadCallback) {
         
         self.manager.upload(multipartFormData: { (formdata) in
             
@@ -373,161 +206,144 @@ public class HTTPClient : NSObject {
                 switch result {
                 case .success(let task, _, _):
                     
-                    task.responseData(completionHandler: { (response) in
-                        
-                        guard response.result.isSuccess else {
-                            return self.handleError(request: task, response: response, completionHandler: callback)
-                        }
-                        
-                        callback(response.response?.statusCode, response.data, response.result.error)
-                    })
+                    callback(task, nil)
                     
                 case .failure(let encodingError):
                     
-                    callback(-1, nil, NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"encoding failed \(encodingError)"]))
+                    callback(nil, encodingError)
                 }
         }
     }
-    
-    // MARK: - Suspend/pause/cancel
-    
-    public func cancelAll() {
+}
 
-        let error = NSError(domain: "", code: 503, userInfo: nil)
-        
-        manager.session.getTasksWithCompletionHandler { dataTasks, uploadTasks, downloadTasks in
-            
-            for task in dataTasks {
-                
-                if let callback = self.callbacks[task.taskIdentifier] {
-                    callback(URLError.cancelled.rawValue, nil, error)
-                }
-                
-                task.cancel()
-            }
-            
-            for task in uploadTasks {
-                
-                if let callback = self.callbacks[task.taskIdentifier] {
-                    callback(URLError.cancelled.rawValue, nil, error)
-                }
-                
-                task.cancel()
-            }
-            
-            for task in downloadTasks {
-                
-                if let callback = self.callbacks[task.taskIdentifier] {
-                    callback(URLError.cancelled.rawValue, nil, error)
-                }
-                
-                task.cancel()
-            }
-        }
-        
-        while let (_, task) = self.pendingRequests.popFirst() {
-            
-            if let callback = self.callbacks[task.taskIdentifier] {
-                callback(URLError.cancelled.rawValue, nil, error)
-            }
-            
-            task.cancel()
-        }
-        
-        manager.startRequestsImmediately = true
-        
-        pendingRequests.removeAll()
-        callbacks.removeAll()
+// MARK: - Authentication strategy
+
+open class OAuth2Strategy: AuthenticationStrategy {
+    
+    private typealias RefreshCompletion = (_ error: Error?, _ accessToken: String?) -> Void
+    
+    public var router: Router
+    
+    public var authenticationHeader: String
+    public var accessToken: String
+    
+    open var isRefreshing = false
+    open var retries = 0
+    open let retriesLimit = 4
+    
+    private let lock = NSLock()
+    
+    private var requestsToRetry: [RequestRetryCompletion] = []
+    
+    // MARK: - Initialization
+    
+    public init(router :Router, accessToken: String, authenticationHeader :String, authenticationDataProvider :AuthenticationDataProvider) {
+        self.router = router
+        self.accessToken = accessToken
+        self.authenticationHeader = authenticationHeader
+        self.authenticationDataProvider = authenticationDataProvider
     }
     
-    private func suspendAll(currentTask :URLSessionTask? = nil) {
+    // MARK: - Auth data provider
+    
+    public var authenticationDataProvider: AuthenticationDataProvider
+    
+    // MARK: - RequestRetrier
+    
+    public func should(_ manager: SessionManager, retry request: Request, with error: Error, completion: @escaping RequestRetryCompletion) {
         
-        manager.startRequestsImmediately = false
+        lock.lock() ; defer { lock.unlock() }
         
-        manager.session.getTasksWithCompletionHandler { dataTasks, uploadTasks, downloadTasks in
+        guard let response = request.task?.response as? HTTPURLResponse, response.statusCode == 401 else {
+            return completion(false, 0.0)
+        }
+        
+        requestsToRetry.append(completion)
+        
+        guard !isRefreshing else {
+            return
+        }
+        
+        refreshToken(with: manager) { [weak self] error, accessToken in
             
-            for task in dataTasks {
-                
-                if let current = currentTask, current.taskIdentifier == task.taskIdentifier {
-                    continue
-                }
-                
-                task.suspend()
-                self.pendingRequests[task.taskIdentifier] = task
+            guard let strongSelf = self else { return }
+            
+            strongSelf.lock.lock() ; defer { strongSelf.lock.unlock() }
+            
+            if let accessToken = accessToken {
+                strongSelf.accessToken = accessToken
             }
             
-            for task in uploadTasks {
-                
-                if let current = currentTask, current.taskIdentifier == task.taskIdentifier {
-                    continue
-                }
-                
-                task.suspend()
-                self.pendingRequests[task.taskIdentifier] = task
-            }
+            let shouldRetry = error == nil
             
-            for task in downloadTasks {
-                
-                if let current = currentTask, current.taskIdentifier == task.taskIdentifier {
-                    continue
-                }
-                task.suspend()
-                self.pendingRequests[task.taskIdentifier] = task
-            }
+            // Retry if we succeeded
+            strongSelf.requestsToRetry.forEach { $0(shouldRetry, 0.0) }
+            strongSelf.requestsToRetry.removeAll()
         }
     }
     
-    private func resumeAll(accessToken :String? = nil) {
+    // MARK: - Private - Refresh Tokens
+    
+    private func refreshToken(with manager :SessionManager, and completion: @escaping RefreshCompletion) {
         
-        manager.startRequestsImmediately = true
-        
-        manager.session.getTasksWithCompletionHandler { dataTasks, uploadTasks, downloadTasks in
-            
-            for task in dataTasks {
-                self.resume(task: task, identifier: task.taskIdentifier, accessToken: accessToken)
-            }
-            
-            for task in uploadTasks {
-                self.resume(task: task, identifier: task.taskIdentifier, accessToken: accessToken)
-            }
-            
-            for task in downloadTasks {
-                self.resume(task: task, identifier: task.taskIdentifier, accessToken: accessToken)
-            }
-            
-            while let (identifier, task) = self.pendingRequests.popFirst() {
-                self.resume(task: task, identifier: identifier, accessToken: accessToken)
-            }
+        guard !isRefreshing else {
+            return
         }
         
+        guard let request = router.buildRequest(api: authenticationDataProvider) else {
+            return completion(NSError(domain: "", code: 504, userInfo: [NSLocalizedDescriptionKey:"Could not build auth request"]), nil)
+        }
+        
+        isRefreshing = true
+        
+        manager.request(request).responseJSON { [weak self] response in
+            
+            guard let strongSelf = self else { return }
+            
+            strongSelf.isRefreshing = false
+            strongSelf.retries = strongSelf.retries + 1
+            
+            guard let statusCode = response.response?.statusCode else {
+                return completion(NSError(domain: "", code: 505, userInfo: ["message":"Request failed"]), nil)
+            }
+            
+            switch statusCode {
+            case 200:
+                
+                guard let data = response.result.value as? [String:Any] else {
+                    return completion(NSError(domain: "", code: 503, userInfo: ["message":"Could not parse response"]), nil)
+                }
+                
+                guard let token = data[strongSelf.authenticationDataProvider.accessTokenKey] as? String else {
+                    return completion(NSError(domain: "", code: 504, userInfo: ["message":"Token missing"]), nil)
+                }
+                
+                strongSelf.retries = 0
+                
+                completion(nil, token)
+                
+            default:
+                
+                if strongSelf.retries < strongSelf.retriesLimit {
+                    
+                    DispatchQueue.main.asyncAfter(deadline: .now() + Double(strongSelf.retries) * Double(strongSelf.retries)) {
+                        
+                        strongSelf.refreshToken(with: manager, and: completion)
+                    }
+                }
+                else {
+                    
+                    completion(NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"Authentication limit reached"]), nil)
+                    
+                    strongSelf.refreshTokenLimitReached()
+                    
+                }
+            }
+        }
     }
     
-    private func resume(task :URLSessionTask, identifier :Int, accessToken :String? = nil) {
-        
-        self.pendingRequests[identifier] = nil
-        
-        guard let token = accessToken else {
-            return task.resume()
-        }
-        
-        guard var request = task.originalRequest?.urlRequest else {
-            return task.resume()
-        }
-        
-        guard let callback = self.callbacks[identifier] else {
-            return task.resume()
-        }
-        
-        if let authenticationStrategy = self.authenticationStrategy {
-            request.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
-        }
-        
-        self.request(request: request) { (statusCode, data, error) in
-            callback(statusCode, data, error)
-            
-            self.callbacks[identifier] = nil
-            
-            task.cancel()
-        }
+    // MARK: - Retry limit reached
+    open func refreshTokenLimitReached() {
+        self.retries = 0
     }
 }
