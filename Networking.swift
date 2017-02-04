@@ -25,8 +25,8 @@ extension Router {
         
         var urlRequest = urlRequest
         
-        if let strategy = self.authenticationStrategy {
-            urlRequest.setValue(strategy.accessToken, forHTTPHeaderField: strategy.authenticationHeader)
+        if let strategy = self.authenticationStrategy, let token = strategy.accessToken  {
+            urlRequest.setValue(token, forHTTPHeaderField: strategy.authenticationHeader)
         }
         
         return urlRequest
@@ -70,12 +70,13 @@ public protocol Logging: class {
 }
 
 public typealias RequestRetryCompletion = (_ shouldRetry: Bool, _ timeDelay: TimeInterval) -> Void
+public typealias RefreshCompletion = (_ error: Error?, _ accessToken: String?) -> Void
 
 public protocol AuthenticationStrategy: RequestRetrier {
     
     var router :Router { get }
     
-    var accessToken: String { get set }
+    var accessToken: String? { get set }
     var authenticationHeader: String { get }
     
     var isRefreshing: Bool { get }
@@ -85,13 +86,12 @@ public protocol AuthenticationStrategy: RequestRetrier {
     var authenticationDataProvider :AuthenticationDataProvider { get }
     
     func should(_ manager: SessionManager, retry request: Request, with error: Error, completion: @escaping RequestRetryCompletion)
+    func refreshToken(with manager :SessionManager, and completion: @escaping RefreshCompletion)
 }
 
 public protocol AuthenticationDataProvider: API {
     
     var accessTokenKey: String { get }
-    
-    func generateAuthenticationData() -> [String:Any]?
 }
 
 public enum ContentType: String {
@@ -220,12 +220,10 @@ public class HTTPClient {
 
 open class OAuth2Strategy: AuthenticationStrategy {
     
-    private typealias RefreshCompletion = (_ error: Error?, _ accessToken: String?) -> Void
+    open var router: Router
     
-    public var router: Router
-    
-    public var authenticationHeader: String
-    public var accessToken: String
+    open var authenticationHeader: String
+    open var accessToken: String?
     
     open var isRefreshing = false
     open var retries = 0
@@ -237,11 +235,14 @@ open class OAuth2Strategy: AuthenticationStrategy {
     
     // MARK: - Initialization
     
-    public init(router :Router, accessToken: String, authenticationHeader :String, authenticationDataProvider :AuthenticationDataProvider) {
+    public init(router :Router, accessToken: String? = nil, authenticationHeader :String, authenticationDataProvider :AuthenticationDataProvider) {
         self.router = router
-        self.accessToken = accessToken
         self.authenticationHeader = authenticationHeader
         self.authenticationDataProvider = authenticationDataProvider
+        
+        if let accessToken = accessToken {
+            self.accessToken = accessToken
+        }
     }
     
     // MARK: - Auth data provider
@@ -284,7 +285,7 @@ open class OAuth2Strategy: AuthenticationStrategy {
     
     // MARK: - Private - Refresh Tokens
     
-    private func refreshToken(with manager :SessionManager, and completion: @escaping RefreshCompletion) {
+    public func refreshToken(with manager :SessionManager, and completion: @escaping RefreshCompletion) {
         
         guard !isRefreshing else {
             return

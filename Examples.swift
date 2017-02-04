@@ -90,7 +90,7 @@ open class FBAuthenticationStrategy: OAuth2Strategy {
     
     // MARK: - Initialization
     
-    override init(router :Router, accessToken: String = "", authenticationHeader: String, authenticationDataProvider: AuthenticationDataProvider) {
+    override init(router :Router, accessToken: String = nil, authenticationHeader: String, authenticationDataProvider: AuthenticationDataProvider) {
         super.init(router :router,
                    accessToken: accessToken,
                    authenticationHeader: authenticationHeader,
@@ -107,20 +107,13 @@ open class FBAuthenticationStrategy: OAuth2Strategy {
         public var encoding: ParameterEncoding = JSONEncoding.default
         public var method: HTTPMethod = .post
         public var path: String = "/authenticate"
-        public var parameters: [String : AnyObject]?
-        
-        public init(parameters :[String:AnyObject] = [:]) {
-            self.parameters = parameters
-        }
-        
-        public func generateAuthenticationData() -> [String : Any]? {
-            
-            if var parameters = self.parameters {
+        public var parameters: [String : AnyObject]? {
+            get {
+                var parameters = [:]
                 parameters["fb_id"] = "123" as AnyObject?
                 parameters["oauth_token"] = "123" as AnyObject?
+                return parameters
             }
-            
-            return self.parameters
         }
     }
     
