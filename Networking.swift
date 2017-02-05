@@ -13,6 +13,8 @@ public typealias ParameterEncoding = Alamofire.ParameterEncoding
 
 public protocol Router :RequestAdapter {
     
+    var logging :Logging? { get }
+    
     func isAuthenticated() -> Bool
 
     var baseURL: URL { get set }
@@ -129,14 +131,11 @@ public class HTTPClient {
     }()
     
     public var router :Router
-    public var logging :Logging?
     
     // MARK: - Initialization
     
-    public init(router :Router, logging :Logging? = nil) {
+    public init(router :Router) {
         self.router = router
-        self.logging = logging
-        
         self.manager.adapter = self.router
         self.manager.retrier = self.router.authenticationStrategy
     }
@@ -280,6 +279,10 @@ open class OAuth2Strategy: AuthenticationStrategy {
             // Retry if we succeeded
             strongSelf.requestsToRetry.forEach { $0(shouldRetry, 0.0) }
             strongSelf.requestsToRetry.removeAll()
+            
+            if let logging = strongSelf.router.logging, !shouldRetry {
+                logging.logEvent(event: "Authentication failed", error: error)
+            }
         }
     }
     
@@ -305,7 +308,7 @@ open class OAuth2Strategy: AuthenticationStrategy {
             strongSelf.retries = strongSelf.retries + 1
             
             guard let statusCode = response.response?.statusCode else {
-                return completion(NSError(domain: "", code: 505, userInfo: ["message":"Request failed"]), nil)
+                return completion(NSError(domain: "", code: 505, userInfo: [NSLocalizedDescriptionKey:"Request failed"]), nil)
             }
             
             switch statusCode {
@@ -334,7 +337,7 @@ open class OAuth2Strategy: AuthenticationStrategy {
                 }
                 else {
                     
-                    completion(NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"Authentication limit reached"]), nil)
+                    completion(NSError(domain: "", code: 506, userInfo: [NSLocalizedDescriptionKey:"Authentication limit reached"]), nil)
                     
                     strongSelf.refreshTokenLimitReached()
                     
@@ -346,5 +349,9 @@ open class OAuth2Strategy: AuthenticationStrategy {
     // MARK: - Retry limit reached
     open func refreshTokenLimitReached() {
         self.retries = 0
+        
+        if let logging = router.logging {
+            logging.logEvent(event: "Authentication failed", error: NSError(domain: "", code: 501, userInfo: [NSLocalizedDescriptionKey:"Authentication limit reached"]))
+        }
     }
 }
