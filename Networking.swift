@@ -71,6 +71,8 @@ public protocol Logging: class {
     func logEvent(event :String, error :Error?) -> Void
 }
 
+public typealias AuthenticationDataProvider = API
+
 public typealias RequestRetryCompletion = (_ shouldRetry: Bool, _ timeDelay: TimeInterval) -> Void
 public typealias RefreshCompletion = (_ error: Error?, _ accessToken: String?) -> Void
 
@@ -89,11 +91,6 @@ public protocol AuthenticationStrategy: RequestRetrier {
     
     func should(_ manager: SessionManager, retry request: Request, with error: Error, completion: @escaping RequestRetryCompletion)
     func refreshToken(with manager :SessionManager, and completion: @escaping RefreshCompletion)
-}
-
-public protocol AuthenticationDataProvider: API {
-    
-    var accessTokenKey: String { get }
 }
 
 public enum ContentType: String {
@@ -144,15 +141,13 @@ public class HTTPClient {
     
     open let manager: SessionManager = {
         
-        var defaultHeaders = SessionManager.default.session.configuration.httpAdditionalHeaders ?? [:]
+        var defaultHeaders = SessionManager.defaultHTTPHeaders
         defaultHeaders[kUserAgentHeader] = userAgent
         
         let configuration = URLSessionConfiguration.default
         configuration.httpAdditionalHeaders = defaultHeaders
         
-        let manager = SessionManager(configuration: configuration)
-        
-        return manager
+        return SessionManager(configuration: configuration)
     }()
     
     // MARK: - Build request
@@ -212,6 +207,121 @@ public class HTTPClient {
                     callback(nil, encodingError)
                 }
         }
+    }
+}
+
+// MARK: - Response object serialization
+
+protocol ResponseObjectSerializable {
+    init?(response: HTTPURLResponse, representation: Any)
+}
+
+extension DataRequest {
+    
+    @discardableResult
+    func responseObject<T: ResponseObjectSerializable>(
+        queue: DispatchQueue? = nil,
+        completionHandler: @escaping (DataResponse<T>) -> Void)
+        -> Self
+    {
+        let responseSerializer = DataResponseSerializer<T> { request, response, data, error in
+            guard error == nil else { return .failure(BackendError.network(error: error!)) }
+            
+            let jsonResponseSerializer = DataRequest.jsonResponseSerializer(options: .allowFragments)
+            let result = jsonResponseSerializer.serializeResponse(request, response, data, nil)
+            
+            guard case let .success(jsonObject) = result else {
+                return .failure(BackendError.jsonSerialization(error: result.error!))
+            }
+            
+            guard let response = response, let responseObject = T(response: response, representation: jsonObject) else {
+                return .failure(BackendError.objectSerialization(reason: "JSON could not be serialized: \(jsonObject)"))
+            }
+            
+            return .success(responseObject)
+        }
+        
+        return response(queue: queue, responseSerializer: responseSerializer, completionHandler: completionHandler)
+    }
+}
+
+// MARK: - Response object collection serialization
+
+protocol ResponseCollectionSerializable {
+    static func collection(from response: HTTPURLResponse, withRepresentation representation: Any) -> [Self]
+}
+
+extension ResponseCollectionSerializable where Self: ResponseObjectSerializable {
+    static func collection(from response: HTTPURLResponse, withRepresentation representation: Any) -> [Self] {
+        var collection: [Self] = []
+        
+        guard let representation = representation as? [[String: Any]] else {
+            return collection
+        }
+        
+        for itemRepresentation in representation {
+            if let item = Self(response: response, representation: itemRepresentation) {
+                collection.append(item)
+            }
+        }
+        
+        return collection
+    }
+}
+
+extension DataRequest {
+    @discardableResult
+    func responseCollection<T: ResponseCollectionSerializable>(
+        queue: DispatchQueue? = nil,
+        completionHandler: @escaping (DataResponse<[T]>) -> Void) -> Self
+    {
+        let responseSerializer = DataResponseSerializer<[T]> { request, response, data, error in
+            guard error == nil else { return .failure(BackendError.network(error: error!)) }
+            
+            let jsonSerializer = DataRequest.jsonResponseSerializer(options: .allowFragments)
+            let result = jsonSerializer.serializeResponse(request, response, data, nil)
+            
+            guard case let .success(jsonObject) = result else {
+                return .failure(BackendError.jsonSerialization(error: result.error!))
+            }
+            
+            guard let response = response else {
+                let reason = "Response collection could not be serialized due to nil response."
+                return .failure(BackendError.objectSerialization(reason: reason))
+            }
+            
+            return .success(T.collection(from: response, withRepresentation: jsonObject))
+        }
+        
+        return response(responseSerializer: responseSerializer, completionHandler: completionHandler)
+    }
+}
+
+// MARK: - Capture any underlying Error from the URLSession API
+
+enum BackendError: Error {
+    case network(error: Error)
+    case jsonSerialization(error: Error)
+    case objectSerialization(reason: String)
+}
+
+// MARK: - Authentication response struct
+
+struct AuthResponse: ResponseObjectSerializable, CustomStringConvertible {
+    
+    let accessToken: String
+    
+    var description: String {
+        return "Access token: { \(accessToken) }"
+    }
+    
+    init?(response: HTTPURLResponse, representation: Any) {
+        guard
+            let representation = representation as? [String: Any],
+            let accessToken = representation["access_token"] as? String
+            else { return nil }
+        
+        self.accessToken = accessToken
     }
 }
 
@@ -300,7 +410,7 @@ open class OAuth2Strategy: AuthenticationStrategy {
         
         isRefreshing = true
         
-        manager.request(request).responseJSON { [weak self] response in
+        manager.request(request).responseObject { [weak self] (response: DataResponse<AuthResponse>) in
             
             guard let strongSelf = self else { return }
             
@@ -314,17 +424,13 @@ open class OAuth2Strategy: AuthenticationStrategy {
             switch statusCode {
             case 200:
                 
-                guard let data = response.result.value as? [String:Any] else {
-                    return completion(NSError(domain: "", code: 503, userInfo: ["message":"Could not parse response"]), nil)
-                }
-                
-                guard let token = data[strongSelf.authenticationDataProvider.accessTokenKey] as? String else {
-                    return completion(NSError(domain: "", code: 504, userInfo: ["message":"Token missing"]), nil)
+                guard let authResponse = response.result.value else {
+                    return completion(NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"Could not parse authentication response"]), nil)
                 }
                 
                 strongSelf.retries = 0
                 
-                completion(nil, token)
+                completion(nil, authResponse.accessToken)
                 
             default:
                 
