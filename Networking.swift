@@ -212,7 +212,7 @@ public class HTTPClient {
 
 // MARK: - Response object serialization
 
-protocol ResponseObjectSerializable {
+public protocol ResponseObjectSerializable {
     init?(response: HTTPURLResponse, representation: Any)
 }
 
@@ -247,11 +247,11 @@ extension DataRequest {
 
 // MARK: - Response object collection serialization
 
-protocol ResponseCollectionSerializable {
+public protocol ResponseCollectionSerializable {
     static func collection(from response: HTTPURLResponse, withRepresentation representation: Any) -> [Self]
 }
 
-extension ResponseCollectionSerializable where Self: ResponseObjectSerializable {
+public extension ResponseCollectionSerializable where Self: ResponseObjectSerializable {
     static func collection(from response: HTTPURLResponse, withRepresentation representation: Any) -> [Self] {
         var collection: [Self] = []
         
@@ -269,7 +269,7 @@ extension ResponseCollectionSerializable where Self: ResponseObjectSerializable 
     }
 }
 
-extension DataRequest {
+public extension DataRequest {
     @discardableResult
     func responseCollection<T: ResponseCollectionSerializable>(
         queue: DispatchQueue? = nil,
