@@ -90,7 +90,7 @@ public protocol AuthenticationStrategy: RequestRetrier {
     var authenticationDataProvider :AuthenticationDataProvider { get }
     
     func should(_ manager: SessionManager, retry request: Request, with error: Error, completion: @escaping RequestRetryCompletion)
-    func refreshToken(with manager :SessionManager, and completion: @escaping RefreshCompletion)
+    func refreshToken(with manager :SessionManager, and completion: @escaping RefreshCompletion) -> DataRequest?
 }
 
 public enum ContentType: String {
@@ -398,19 +398,20 @@ open class OAuth2Strategy: AuthenticationStrategy {
     
     // MARK: - Private - Refresh Tokens
     
-    public func refreshToken(with manager :SessionManager, and completion: @escaping RefreshCompletion) {
+    public func refreshToken(with manager :SessionManager, and completion: @escaping RefreshCompletion) -> DataRequest? {
         
         guard !isRefreshing else {
-            return
+            return nil
         }
         
         guard let request = router.buildRequest(api: authenticationDataProvider) else {
-            return completion(NSError(domain: "", code: 504, userInfo: [NSLocalizedDescriptionKey:"Could not build auth request"]), nil)
+            completion(NSError(domain: "", code: 504, userInfo: [NSLocalizedDescriptionKey:"Could not build auth request"]), nil)
+            return nil
         }
         
         isRefreshing = true
         
-        manager.request(request).responseObject { [weak self] (response: DataResponse<AuthResponse>) in
+        return manager.request(request).responseObject { [weak self] (response: DataResponse<AuthResponse>) in
             
             guard let strongSelf = self else { return }
             
