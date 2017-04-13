@@ -16,6 +16,7 @@ public protocol Router :RequestAdapter {
     var logging :Logging? { get }
     
     func isAuthenticated() -> Bool
+    func isProviderAuthenticated() -> Bool
 
     var baseURL: URL { get set }
     var authenticationStrategy :AuthenticationStrategy? { get }
@@ -71,16 +72,23 @@ public protocol Logging: class {
     func logEvent(event :String, error :Error?) -> Void
 }
 
-public typealias AuthenticationDataProvider = API
+public protocol Authentication {
+    var accessToken: String? { get }
+    var expirationDate: Date? { get }
+    var lastAuthentication: Date? { get }
+}
+
+public protocol AuthenticationDataProvider : API, Authentication {
+    func isAuthenticated() -> Bool
+}
 
 public typealias RequestRetryCompletion = (_ shouldRetry: Bool, _ timeDelay: TimeInterval) -> Void
-public typealias RefreshCompletion = (_ error: Error?, _ accessToken: String?) -> Void
+public typealias RefreshCompletion = (_ error: Error?, _ authResponse: AuthResponse?) -> Void
 
-public protocol AuthenticationStrategy: RequestRetrier {
+public protocol AuthenticationStrategy: RequestRetrier, Authentication {
     
     var router :Router { get }
     
-    var accessToken: String? { get set }
     var authenticationHeader: String { get }
     
     var isRefreshing: Bool { get }
@@ -307,32 +315,54 @@ enum BackendError: Error {
 
 // MARK: - Authentication response struct
 
-struct AuthResponse: ResponseObjectSerializable, CustomStringConvertible {
+public struct AuthResponse: ResponseObjectSerializable, Authentication {
     
-    let accessToken: String
+    public let accessToken: String?
+    public let expirationDate: Date?
+    public var lastAuthentication: Date?
     
-    var description: String {
-        return "Access token: { \(accessToken) }"
-    }
-    
-    init?(response: HTTPURLResponse, representation: Any) {
+    public init?(response: HTTPURLResponse, representation: Any) {
         guard
             let representation = representation as? [String: Any],
             let accessToken = representation["access_token"] as? String
             else { return nil }
         
+        let expirationString = representation["expires"] as? String
+        
         self.accessToken = accessToken
+        self.expirationDate = expirationString?.asDate // "2017-04-11T13:53:50+0000"
+    }
+}
+
+private extension DateFormatter {
+    convenience init(dateFormat: String) {
+        self.init()
+        self.dateFormat = dateFormat
+    }
+}
+
+private extension String {
+    struct S {
+        static let formatter = DateFormatter(dateFormat: "yyyy-MM-dd'T'HH:mm:ssZZZZZ")
+    }
+    var asDate: Date? {
+        guard let asDate = S.formatter.date(from: self) else {
+            return nil
+        }
+        return asDate
     }
 }
 
 // MARK: - Authentication strategy
 
-open class OAuth2Strategy: AuthenticationStrategy {
+open class OAuth2Strategy: AuthenticationStrategy, Authentication {
     
     open var router: Router
     
     open var authenticationHeader: String
     open var accessToken: String?
+    open var lastAuthentication: Date?
+    open var expirationDate: Date?
     
     open var isRefreshing = false
     open var retries = 0
@@ -374,15 +404,21 @@ open class OAuth2Strategy: AuthenticationStrategy {
             return
         }
         
-        refreshToken(with: manager) { [weak self] error, accessToken in
+        refreshToken(with: manager) { [weak self] error, authResponse in
             
             guard let strongSelf = self else { return }
             
             strongSelf.lock.lock() ; defer { strongSelf.lock.unlock() }
             
-            if let accessToken = accessToken {
+            if let accessToken = authResponse?.accessToken {
                 strongSelf.accessToken = accessToken
             }
+            
+            if let expirationDate = authResponse?.expirationDate {
+                strongSelf.expirationDate = expirationDate
+            }
+            
+            strongSelf.lastAuthentication = Date()
             
             let shouldRetry = error == nil
             
@@ -397,7 +433,7 @@ open class OAuth2Strategy: AuthenticationStrategy {
     }
     
     // MARK: - Private - Refresh Tokens
-    
+    @discardableResult
     public func refreshToken(with manager :SessionManager, and completion: @escaping RefreshCompletion) -> DataRequest? {
         
         guard !isRefreshing else {
@@ -431,7 +467,7 @@ open class OAuth2Strategy: AuthenticationStrategy {
                 
                 strongSelf.retries = 0
                 
-                completion(nil, authResponse.accessToken)
+                completion(nil, authResponse)
                 
             default:
                 
