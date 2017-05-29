@@ -238,11 +238,17 @@ extension DataRequest {
             let jsonResponseSerializer = DataRequest.jsonResponseSerializer(options: .allowFragments)
             let result = jsonResponseSerializer.serializeResponse(request, response, data, nil)
             
-            guard case let .success(jsonObject) = result else {
+            guard case let .success(jsonObject as AnyObject) = result else {
                 return .failure(BackendError.jsonSerialization(error: result.error!))
             }
             
-            guard let response = response, let responseObject = T(response: response, representation: jsonObject) else {
+            var representation = jsonObject
+            
+            if let jsonObject = jsonObject["data"] as? [String:AnyObject] {
+                representation = jsonObject as AnyObject
+            }
+            
+            guard let response = response, let responseObject = T(response: response, representation: representation) else {
                 return .failure(BackendError.objectSerialization(reason: "JSON could not be serialized: \(jsonObject)"))
             }
             
@@ -260,15 +266,25 @@ public protocol ResponseCollectionSerializable {
 }
 
 public extension ResponseCollectionSerializable where Self: ResponseObjectSerializable {
-    static func collection(from response: HTTPURLResponse, withRepresentation representation: Any) -> [Self] {
+    static func collection(from response: HTTPURLResponse, withRepresentation jsonObject: Any) -> [Self] {
         var collection: [Self] = []
         
-        guard let representation = representation as? [[String: Any]] else {
+        var representation :[[String:Any]]?
+       
+        if let jsonObject = jsonObject as? [String:[[String:Any]]], let jsonArray = jsonObject["data"] {
+            representation = jsonArray
+        }
+        
+        if let jsonArray = jsonObject as? [[String: Any]] {
+            representation = jsonArray
+        }
+        
+        guard let itemRepresentation = representation else {
             return collection
         }
         
-        for itemRepresentation in representation {
-            if let item = Self(response: response, representation: itemRepresentation) {
+        for item in itemRepresentation {
+            if let item = Self(response: response, representation: item) {
                 collection.append(item)
             }
         }
