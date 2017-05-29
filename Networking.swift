@@ -229,7 +229,7 @@ public protocol ResponseObjectSerializable {
     init?(response: HTTPURLResponse, representation: Any)
 }
 
-extension DataRequest {
+public extension DataRequest {
     
     @discardableResult
     func responseObject<T: ResponseObjectSerializable>(
