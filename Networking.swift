@@ -167,7 +167,12 @@ public class HTTPClient {
             return nil
         }
         
-        return self.manager.request(request)
+        return self.request(request: request)
+    }
+    
+    @discardableResult
+    public func request(request :URLRequest) -> DataRequest? {
+        return self.manager.request(request).validate()
     }
     
     // MARK: - Upload
