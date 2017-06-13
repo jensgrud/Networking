@@ -20,6 +20,8 @@ public protocol Router :RequestAdapter {
 
     var baseURL: URL { get set }
     var authenticationStrategy :AuthenticationStrategy? { get }
+    
+    var customHeaders :[String:String] { get }
 }
 
 extension Router {
@@ -30,6 +32,10 @@ extension Router {
         
         if let strategy = self.authenticationStrategy, let token = strategy.accessToken  {
             urlRequest.setValue(token, forHTTPHeaderField: strategy.authenticationHeader)
+        }
+        
+        for (key, value) in customHeaders {
+            urlRequest.setValue(value, forHTTPHeaderField: key)
         }
         
         return urlRequest
@@ -128,7 +134,9 @@ public class HTTPClient {
             let appVersion = info["CFBundleShortVersionString"] as? String ?? "Unknown"
             let appBuild = info[kCFBundleVersionKey as String] as? String ?? "Unknown"
             let os = ProcessInfo.processInfo.operatingSystemVersionString
-            let userAgent = executable + "/" + appVersion + " (" + bundle + "; build:" + appBuild + "; " + os + ")"
+            let languageCode = Locale.current.languageCode ?? "Unknown"
+            let regionCode = Locale.current.regionCode ?? "Unknown"
+            let userAgent = executable + " " + appVersion + " iOS " + languageCode + "-" + regionCode + " (" + bundle + "; build:" + appBuild + "; " + os + ")"
             
             return userAgent
         }
