@@ -8,8 +8,12 @@
 
 import Alamofire
 
-public typealias HTTPMethod = Alamofire.HTTPMethod
-public typealias ParameterEncoding = Alamofire.ParameterEncoding
+public typealias HTTPMethod             = Alamofire.HTTPMethod
+public typealias ParameterEncoding      = Alamofire.ParameterEncoding
+public typealias Parameters             = Alamofire.Parameters
+public typealias JSONEncoding           = Alamofire.JSONEncoding
+public typealias URLEncoding            = Alamofire.URLEncoding
+public typealias DataResponse<Value>    = Alamofire.DataResponse<Value>
 
 public protocol Router :RequestAdapter {
     
@@ -41,7 +45,7 @@ extension Router {
         return urlRequest
     }
     
-    public func buildRequest(path :String, method :HTTPMethod, accept :ContentType?, encoding :ParameterEncoding, parameters :[String: AnyObject]?) -> URLRequest? {
+    public func buildRequest(path :String, method :HTTPMethod, accept :ContentType?, encoding :ParameterEncoding, parameters :Parameters?) -> URLRequest? {
         
         let baseURL = self.baseURL.appendingPathComponent(path)
         
@@ -71,7 +75,7 @@ public protocol API {
     var method: HTTPMethod { get }
     var encoding : ParameterEncoding { get }
     var accept : ContentType? { get }
-    var parameters: [String: AnyObject]? { get }
+    var parameters: Parameters? { get }
 }
 
 public protocol Logging: class {
@@ -85,6 +89,7 @@ public protocol Authentication {
 }
 
 public protocol AuthenticationDataProvider : API, Authentication {
+    var identifier :String { get }
     func isAuthenticated() -> Bool
 }
 
@@ -105,6 +110,7 @@ public protocol AuthenticationStrategy: RequestRetrier, Authentication {
     
     func should(_ manager: SessionManager, retry request: Request, with error: Error, completion: @escaping RequestRetryCompletion)
     func refreshToken(with manager :SessionManager, and completion: @escaping RefreshCompletion) -> DataRequest?
+    func authenticationCompleted(with authResponse: AuthResponse?, and error :Error?)
 }
 
 public enum ContentType: String {
@@ -218,15 +224,15 @@ public class HTTPClient {
             
         }, with: request) { (result) in
             
-                switch result {
-                case .success(let task, _, _):
-                    
-                    callback(task, nil)
-                    
-                case .failure(let encodingError):
-                    
-                    callback(nil, encodingError)
-                }
+            switch result {
+            case .success(let task, _, _):
+                
+                callback(task, nil)
+                
+            case .failure(let encodingError):
+                
+                callback(nil, encodingError)
+            }
         }
     }
 }
@@ -455,6 +461,8 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
             strongSelf.requestsToRetry.forEach { $0(shouldRetry, 0.0) }
             strongSelf.requestsToRetry.removeAll()
             
+            strongSelf.authenticationCompleted(with: authResponse, and: error)
+            
             if let logging = strongSelf.router.logging, !shouldRetry {
                 logging.logEvent(event: "Authentication failed", error: error)
             }
@@ -520,10 +528,20 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
     
     // MARK: - Retry limit reached
     open func refreshTokenLimitReached() {
+        
         self.retries = 0
         
         if let logging = router.logging {
             logging.logEvent(event: "Authentication failed", error: NSError(domain: "", code: 501, userInfo: [NSLocalizedDescriptionKey:"Authentication limit reached"]))
+        }
+    }
+    
+    open func authenticationCompleted(with authResponse: AuthResponse?, and error: Error?) {
+        
+        self.retries = 0
+        
+        if let logging = router.logging, let error = error {
+            logging.logEvent(event: "Authentication failed", error: error)
         }
     }
 }
