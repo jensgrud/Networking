@@ -429,7 +429,7 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
         
         lock.lock() ; defer { lock.unlock() }
         
-        guard let response = request.task?.response as? HTTPURLResponse, response.statusCode == 401 else {
+        guard let response = request.task?.response as? HTTPURLResponse, response.statusCode == 401 && authenticationDataProvider.isAuthenticated() else {
             return completion(false, 0.0)
         }
         
