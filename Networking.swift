@@ -34,7 +34,7 @@ extension Router {
         
         var urlRequest = urlRequest
         
-        if let strategy = self.authenticationStrategy, let token = strategy.accessToken  {
+        if let strategy = self.authenticationStrategy, let token = strategy.accessToken, self.isAuthenticated() {
             urlRequest.setValue(token, forHTTPHeaderField: strategy.authenticationHeader)
         }
         
