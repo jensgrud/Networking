@@ -401,7 +401,7 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
     
     open var isRefreshing = false
     open var retries = 0
-    open let retriesLimit = 4
+    open let retriesLimit = 3
     
     private let lock = NSLock()
     
@@ -429,7 +429,14 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
         
         lock.lock() ; defer { lock.unlock() }
         
-        guard let response = request.task?.response as? HTTPURLResponse, response.statusCode == 401 && authenticationDataProvider.isAuthenticated() else {
+        guard let response = request.task?.response as? HTTPURLResponse, response.statusCode == 401 else {
+            return completion(false, 0.0)
+        }
+        
+        // Reset access token if access token is set, router thinks it is authenticated but provider is not authenticated
+        
+        guard authenticationDataProvider.isAuthenticated() else {
+            self.resetToken()
             return completion(false, 0.0)
         }
         
@@ -457,13 +464,21 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
             
             let shouldRetry = error == nil
             
+            if shouldRetry {
+                strongSelf.lastAuthentication = Date()
+            }
+            else {
+                strongSelf.resetToken()
+            }
+            
             // Retry if we succeeded
             strongSelf.requestsToRetry.forEach { $0(shouldRetry, 0.0) }
             strongSelf.requestsToRetry.removeAll()
             
+            // TODO: This is called on every authentication attempt
             strongSelf.authenticationCompleted(with: authResponse, and: error)
             
-            if let logging = strongSelf.router.logging, !shouldRetry {
+            if let logging = strongSelf.router.logging, let error = error {
                 logging.logEvent(event: "Authentication failed", error: error)
             }
         }
@@ -477,7 +492,9 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
             return nil
         }
         
-        guard let request = router.buildRequest(api: authenticationDataProvider) else {
+        let authAPI = authenticationDataProvider
+        
+        guard let request = router.buildRequest(api: authAPI), authAPI.parameters != nil else {
             completion(NSError(domain: "", code: 504, userInfo: [NSLocalizedDescriptionKey:"Could not build auth request"]), nil)
             return nil
         }
@@ -517,13 +534,20 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
                 }
                 else {
                     
-                    completion(NSError(domain: "", code: 506, userInfo: [NSLocalizedDescriptionKey:"Authentication limit reached"]), nil)
-                    
+                    strongSelf.retries = 0
                     strongSelf.refreshTokenLimitReached()
                     
+                    completion(NSError(domain: "", code: 506, userInfo: [NSLocalizedDescriptionKey:"Authentication limit reached"]), nil)
                 }
             }
         }
+    }
+    
+    func resetToken() {
+        
+        self.accessToken = nil
+        self.expirationDate = nil
+        self.lastAuthentication = nil
     }
     
     // MARK: - Retry limit reached
@@ -538,10 +562,5 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
     
     open func authenticationCompleted(with authResponse: AuthResponse?, and error: Error?) {
         
-        self.retries = 0
-        
-        if let logging = router.logging, let error = error {
-            logging.logEvent(event: "Authentication failed", error: error)
-        }
     }
 }
