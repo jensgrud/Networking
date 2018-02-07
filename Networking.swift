@@ -23,9 +23,9 @@ public protocol Router :RequestAdapter {
     func isProviderAuthenticated() -> Bool
 
     var baseURL: URL { get set }
-    var authenticationStrategy :AuthenticationStrategy? { get }
+    var authenticationStrategy :AuthenticationStrategy { get set }
     
-    var customHeaders :[String:String] { get }
+    func buildCustomHeaders() -> [String:String]
 }
 
 extension Router {
@@ -34,11 +34,11 @@ extension Router {
         
         var urlRequest = urlRequest
         
-        if let strategy = self.authenticationStrategy, let token = strategy.accessToken, self.isAuthenticated() {
-            urlRequest.setValue(token, forHTTPHeaderField: strategy.authenticationHeader)
+        if let token = authenticationStrategy.accessToken, self.isAuthenticated() {
+            urlRequest.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
         }
         
-        for (key, value) in customHeaders {
+        for (key, value) in buildCustomHeaders() {
             urlRequest.setValue(value, forHTTPHeaderField: key)
         }
         
@@ -50,7 +50,7 @@ extension Router {
         let baseURL = self.baseURL.appendingPathComponent(path)
         
         var urlRequest = URLRequest(url: baseURL)
-        urlRequest.httpMethod = method.rawValue 
+        urlRequest.httpMethod = method.rawValue
         
         if let accept = accept {
             urlRequest.setValue(accept.rawValue, forHTTPHeaderField: "Accept")
@@ -59,7 +59,7 @@ extension Router {
         do {
             return try encoding.encode(urlRequest, with: parameters)
         } catch {
-            return nil 
+            return nil
         }
     }
     
@@ -106,7 +106,7 @@ public protocol AuthenticationStrategy: RequestRetrier, Authentication {
     var retries: Int { get set }
     var retriesLimit: Int { get }
     
-    var authenticationDataProvider :AuthenticationDataProvider { get }
+    var authenticationDataProvider :AuthenticationDataProvider? { get set }
     
     func should(_ manager: SessionManager, retry request: Request, with error: Error, completion: @escaping RequestRetryCompletion)
     func refreshToken(with manager :SessionManager, and completion: @escaping RefreshCompletion) -> DataRequest?
@@ -355,7 +355,8 @@ public struct AuthResponse: ResponseObjectSerializable, Authentication {
     public let accessToken: String?
     public let expirationDate: Date?
     public var lastAuthentication: Date?
-    
+    public var mixpanelId: String?
+
     public init?(response: HTTPURLResponse, representation: Any) {
         guard
             let representation = representation as? [String: Any],
@@ -366,6 +367,7 @@ public struct AuthResponse: ResponseObjectSerializable, Authentication {
         
         self.accessToken = accessToken
         self.expirationDate = expirationString?.asDate // "2017-04-11T13:53:50+0000"
+        self.mixpanelId = representation["mixpanel_id"] as? String
     }
 }
 
@@ -409,10 +411,9 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
     
     // MARK: - Initialization
     
-    public init(router :Router, accessToken: String? = nil, authenticationHeader :String, authenticationDataProvider :AuthenticationDataProvider) {
+    public init(router :Router, accessToken: String? = nil, authenticationHeader :String) {
         self.router = router
         self.authenticationHeader = authenticationHeader
-        self.authenticationDataProvider = authenticationDataProvider
         
         if let accessToken = accessToken {
             self.accessToken = accessToken
@@ -421,7 +422,7 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
     
     // MARK: - Auth data provider
     
-    public var authenticationDataProvider: AuthenticationDataProvider
+    open var authenticationDataProvider: AuthenticationDataProvider?
     
     // MARK: - RequestRetrier
     
@@ -435,7 +436,7 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
         
         // Reset access token if access token is set, router thinks it is authenticated but provider is not authenticated
         
-        guard authenticationDataProvider.isAuthenticated() else {
+        guard let authenticationDataProvider = authenticationDataProvider, authenticationDataProvider.isAuthenticated() else {
             self.resetToken()
             return completion(false, 0.0)
         }
@@ -492,7 +493,10 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
             return nil
         }
         
-        let authAPI = authenticationDataProvider
+        guard let authAPI = authenticationDataProvider else {
+            completion(NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"Missing authentication data provider"]), nil)
+            return nil
+        }
         
         guard let request = router.buildRequest(api: authAPI), authAPI.parameters != nil else {
             completion(NSError(domain: "", code: 504, userInfo: [NSLocalizedDescriptionKey:"Could not build auth request"]), nil)
@@ -518,6 +522,10 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
                 guard let authResponse = response.result.value else {
                     return completion(NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"Could not parse authentication response"]), nil)
                 }
+                
+                strongSelf.accessToken = authResponse.accessToken
+                strongSelf.expirationDate = authResponse.expirationDate
+                strongSelf.lastAuthentication = Date()
                 
                 strongSelf.retries = 0
                 
@@ -564,3 +572,4 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
         
     }
 }
+
