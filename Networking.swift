@@ -38,10 +38,6 @@ extension Router {
             urlRequest.setValue(token, forHTTPHeaderField: authenticationStrategy.authenticationHeader)
         }
         
-        for (key, value) in buildCustomHeaders() {
-            urlRequest.setValue(value, forHTTPHeaderField: key)
-        }
-        
         return urlRequest
     }
     
@@ -54,6 +50,10 @@ extension Router {
         
         if let accept = accept {
             urlRequest.setValue(accept.rawValue, forHTTPHeaderField: "Accept")
+        }
+        
+        for (key, value) in buildCustomHeaders() {
+            urlRequest.setValue(value, forHTTPHeaderField: key)
         }
         
         do {
@@ -356,7 +356,9 @@ public struct AuthResponse: ResponseObjectSerializable, Authentication {
     public let expirationDate: Date?
     public var lastAuthentication: Date?
     public var mixpanelId: String?
-
+    public var isSignedUp: Bool = false
+    public var isTermsAccepted: Bool = false
+    
     public init?(response: HTTPURLResponse, representation: Any) {
         guard
             let representation = representation as? [String: Any],
@@ -368,6 +370,8 @@ public struct AuthResponse: ResponseObjectSerializable, Authentication {
         self.accessToken = accessToken
         self.expirationDate = expirationString?.asDate // "2017-04-11T13:53:50+0000"
         self.mixpanelId = representation["mixpanel_id"] as? String
+        self.isSignedUp = (representation["is_signed_up"] as? Bool) ?? false
+        self.isTermsAccepted = (representation["terms_accepted"] as? Bool) ?? false
     }
 }
 
@@ -436,9 +440,11 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
         
         // Reset access token if access token is set, router thinks it is authenticated but provider is not authenticated
         
-        guard let authenticationDataProvider = authenticationDataProvider, authenticationDataProvider.isAuthenticated() else {
-            self.resetToken()
-            return completion(false, 0.0)
+        guard router.isAuthenticated(),
+            let authenticationDataProvider = authenticationDataProvider,
+                authenticationDataProvider.isAuthenticated() else {
+                    self.resetToken()
+                    return completion(false, 0.0)
         }
         
         requestsToRetry.append(completion)
