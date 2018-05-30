@@ -440,11 +440,17 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
         
         // Reset access token if access token is set, router thinks it is authenticated but provider is not authenticated
         
-        guard router.isAuthenticated(),
-            let authenticationDataProvider = authenticationDataProvider,
-                authenticationDataProvider.isAuthenticated() else {
-                    self.resetToken()
-                    return completion(false, 0.0)
+        guard request.task?.originalRequest?.url?.path != authenticationDataProvider?.path else {
+            if router.isAuthenticated() {
+                authenticationCompleted(with: nil, and: NSError(domain: "", code: 500, userInfo: [NSLocalizedDescriptionKey:"Will not re-authenticate on authentication end point"]))
+            }
+            return completion(false, 0.0)
+        }
+        
+        guard let authenticationDataProvider = authenticationDataProvider,
+            authenticationDataProvider.isAuthenticated() else {
+                self.resetToken()
+                return completion(false, 0.0)
         }
         
         requestsToRetry.append(completion)
