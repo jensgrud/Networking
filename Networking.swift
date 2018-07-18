@@ -342,7 +342,7 @@ public extension DataRequest {
 
 // MARK: - Capture any underlying Error from the URLSession API
 
-enum BackendError: Error {
+public enum BackendError: Error {
     case network(error: Error)
     case jsonSerialization(error: Error)
     case objectSerialization(reason: String)
@@ -542,6 +542,13 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
                 strongSelf.retries = 0
                 
                 completion(nil, authResponse)
+                
+            case 401:
+                
+                strongSelf.retries = 0
+                strongSelf.refreshTokenLimitReached()
+                
+                completion(NSError(domain: "", code: 506, userInfo: [NSLocalizedDescriptionKey:"Re-authentication failed"]), nil)
                 
             default:
                 
