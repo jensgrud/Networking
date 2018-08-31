@@ -358,6 +358,7 @@ public struct AuthResponse: ResponseObjectSerializable, Authentication {
     public var mixpanelId: String?
     public var isSignedUp: Bool = false
     public var isTermsAccepted: Bool = false
+    public var roles: [String] = []
     
     public init?(response: HTTPURLResponse, representation: Any) {
         guard
@@ -372,6 +373,7 @@ public struct AuthResponse: ResponseObjectSerializable, Authentication {
         self.mixpanelId = representation["mixpanel_id"] as? String
         self.isSignedUp = (representation["is_signed_up"] as? Bool) ?? false
         self.isTermsAccepted = (representation["terms_accepted"] as? Bool) ?? false
+        self.roles = (representation["roles"] as? [String]) ?? []
     }
 }
 
