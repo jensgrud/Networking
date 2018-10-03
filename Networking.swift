@@ -161,7 +161,7 @@ public class HTTPClient {
     
     // MARK: - Manager
     
-    open let manager: SessionManager = {
+    public let manager: SessionManager = {
         
         var defaultHeaders = SessionManager.defaultHTTPHeaders
         defaultHeaders[kUserAgentHeader] = userAgent
@@ -409,7 +409,7 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
     
     open var isRefreshing = false
     open var retries = 0
-    open let retriesLimit = 3
+    public let retriesLimit = 3
     
     private let lock = NSLock()
     
@@ -449,19 +449,13 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
             return completion(false, 0.0)
         }
         
-        guard let authenticationDataProvider = authenticationDataProvider,
-            authenticationDataProvider.isAuthenticated() else {
-                self.resetToken()
-                return completion(false, 0.0)
-        }
-        
-        requestsToRetry.append(completion)
+        self.requestsToRetry.append(completion)
         
         guard !isRefreshing else {
             return
         }
         
-        refreshToken(with: manager) { [weak self] error, authResponse in
+        self.refreshToken(with: manager) { [weak self] error, authResponse in
             
             guard let strongSelf = self else { return }
             
@@ -474,9 +468,7 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
             if let expirationDate = authResponse?.expirationDate {
                 strongSelf.expirationDate = expirationDate
             }
-            
-            strongSelf.lastAuthentication = Date()
-            
+                        
             let shouldRetry = error == nil
             
             if shouldRetry {
@@ -512,7 +504,7 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
             return nil
         }
         
-        guard let request = router.buildRequest(api: authAPI), authAPI.parameters != nil else {
+        guard let request = router.buildRequest(api: authAPI) else {
             completion(NSError(domain: "", code: 504, userInfo: [NSLocalizedDescriptionKey:"Could not build auth request"]), nil)
             return nil
         }

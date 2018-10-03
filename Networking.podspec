@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name = 'Networking'
-  s.version = '1.3.1'
+  s.version = '1.3.2'
   s.license = { :type => "MIT", :file => "LICENSE" }
   s.summary = 'Alamofire Swift 4.0 wrapper for seamless authentication handling and pausing/resuming of requests'
   s.homepage = 'https://github.com/jensgrud/Networking'
