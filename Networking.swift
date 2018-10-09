@@ -457,37 +457,33 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
         
         self.refreshToken(with: manager) { [weak self] error, authResponse in
             
-            guard let strongSelf = self else { return }
+            guard let `self` = self else { return }
             
-            strongSelf.lock.lock() ; defer { strongSelf.lock.unlock() }
+            self.lock.lock() ; defer { self.lock.unlock() }
             
             if let accessToken = authResponse?.accessToken {
-                strongSelf.accessToken = accessToken
+                self.accessToken = accessToken
             }
             
             if let expirationDate = authResponse?.expirationDate {
-                strongSelf.expirationDate = expirationDate
+                self.expirationDate = expirationDate
             }
                         
             let shouldRetry = error == nil
             
             if shouldRetry {
-                strongSelf.lastAuthentication = Date()
+                self.lastAuthentication = Date()
             }
             else {
-                strongSelf.resetToken()
+                self.resetToken()
             }
             
             // Retry if we succeeded
-            strongSelf.requestsToRetry.forEach { $0(shouldRetry, 0.0) }
-            strongSelf.requestsToRetry.removeAll()
+            self.requestsToRetry.forEach { $0(shouldRetry, 0.0) }
+            self.requestsToRetry.removeAll()
             
             // TODO: This is called on every authentication attempt
-            strongSelf.authenticationCompleted(with: authResponse, and: error)
-            
-            if let logging = strongSelf.router.logging, let error = error {
-                logging.logEvent(event: "Authentication failed", error: error)
-            }
+            self.authenticationCompleted(with: authResponse, and: error)
         }
     }
     
@@ -513,13 +509,17 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
         
         return manager.request(request).responseObject { [weak self] (response: DataResponse<AuthResponse>) in
             
-            guard let strongSelf = self else { return }
+            guard let `self` = self else { return }
             
-            strongSelf.isRefreshing = false
-            strongSelf.retries = strongSelf.retries + 1
+            self.isRefreshing = false
+            self.retries = self.retries + 1
+            
+            if let error = response.error {
+                return completion(error, nil)
+            }
             
             guard let statusCode = response.response?.statusCode else {
-                return completion(NSError(domain: "", code: 505, userInfo: [NSLocalizedDescriptionKey:"Request failed"]), nil)
+                return completion(NSError(domain: "", code: 505, userInfo: [NSLocalizedDescriptionKey:"Request failed - missing status code"]), nil)
             }
             
             switch statusCode {
@@ -529,34 +529,29 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
                     return completion(NSError(domain: "", code: 503, userInfo: [NSLocalizedDescriptionKey:"Could not parse authentication response"]), nil)
                 }
                 
-                strongSelf.accessToken = authResponse.accessToken
-                strongSelf.expirationDate = authResponse.expirationDate
-                strongSelf.lastAuthentication = Date()
+                self.accessToken = authResponse.accessToken
+                self.expirationDate = authResponse.expirationDate
+                self.lastAuthentication = Date()
                 
-                strongSelf.retries = 0
+                self.retries = 0
                 
                 completion(nil, authResponse)
                 
             case 401:
                 
-                strongSelf.retries = 0
-                strongSelf.refreshTokenLimitReached()
-                
                 completion(NSError(domain: "", code: 506, userInfo: [NSLocalizedDescriptionKey:"Re-authentication failed"]), nil)
                 
             default:
                 
-                if strongSelf.retries < strongSelf.retriesLimit {
+                if self.retries < self.retriesLimit {
                     
-                    DispatchQueue.main.asyncAfter(deadline: .now() + Double(strongSelf.retries) * Double(strongSelf.retries)) {
-                        
-                        strongSelf.refreshToken(with: manager, and: completion)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + Double(self.retries) * Double(self.retries)) {
+                        self.refreshToken(with: manager, and: completion)
                     }
                 }
                 else {
                     
-                    strongSelf.retries = 0
-                    strongSelf.refreshTokenLimitReached()
+                    self.refreshTokenLimitReached()
                     
                     completion(NSError(domain: "", code: 506, userInfo: [NSLocalizedDescriptionKey:"Authentication limit reached"]), nil)
                 }
@@ -565,7 +560,6 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
     }
     
     func resetToken() {
-        
         self.accessToken = nil
         self.expirationDate = nil
         self.lastAuthentication = nil
@@ -573,16 +567,13 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
     
     // MARK: - Retry limit reached
     open func refreshTokenLimitReached() {
-        
         self.retries = 0
-        
-        if let logging = router.logging {
-            logging.logEvent(event: "Authentication failed", error: NSError(domain: "", code: 501, userInfo: [NSLocalizedDescriptionKey:"Authentication limit reached"]))
-        }
     }
     
     open func authenticationCompleted(with authResponse: AuthResponse?, and error: Error?) {
-        
+        if let logging = self.router.logging, let error = error {
+            logging.logEvent(event: "Authentication failed", error: error)
+        }
     }
 }
 
