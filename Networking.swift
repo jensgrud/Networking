@@ -168,6 +168,7 @@ public class HTTPClient {
         
         let configuration = URLSessionConfiguration.default
         configuration.httpAdditionalHeaders = defaultHeaders
+        configuration.timeoutIntervalForRequest = 10
         
         return SessionManager(configuration: configuration)
     }()
@@ -442,7 +443,7 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
         
         // Reset access token if access token is set, router thinks it is authenticated but provider is not authenticated
         
-        guard request.task?.originalRequest?.url?.path != authenticationDataProvider?.path else {
+        guard let path = authenticationDataProvider?.path, request.task?.originalRequest?.url?.path != path, path.isEmpty == false else {
             if router.isAuthenticated() {
                 authenticationCompleted(with: nil, and: NSError(domain: "", code: 500, userInfo: [NSLocalizedDescriptionKey:"Will not re-authenticate on authentication end point"]))
             }
