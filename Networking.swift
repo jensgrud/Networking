@@ -8,12 +8,16 @@
 
 import Alamofire
 
-public typealias HTTPMethod             = Alamofire.HTTPMethod
-public typealias ParameterEncoding      = Alamofire.ParameterEncoding
-public typealias Parameters             = Alamofire.Parameters
-public typealias JSONEncoding           = Alamofire.JSONEncoding
-public typealias URLEncoding            = Alamofire.URLEncoding
-public typealias DataResponse<Value>    = Alamofire.DataResponse<Value>
+public typealias ServerTrustPolicy        = Alamofire.ServerTrustPolicy
+public typealias ServerTrustPolicyManager = Alamofire.ServerTrustPolicyManager
+public typealias SessionManager           = Alamofire.SessionManager
+public typealias HTTPHeaders              = Alamofire.HTTPHeaders
+public typealias HTTPMethod               = Alamofire.HTTPMethod
+public typealias ParameterEncoding        = Alamofire.ParameterEncoding
+public typealias Parameters               = Alamofire.Parameters
+public typealias JSONEncoding             = Alamofire.JSONEncoding
+public typealias URLEncoding              = Alamofire.URLEncoding
+public typealias DataResponse<Value>      = Alamofire.DataResponse<Value>
 
 public protocol Router :RequestAdapter {
     
@@ -25,7 +29,7 @@ public protocol Router :RequestAdapter {
     var baseURL: URL { get set }
     var authenticationStrategy :AuthenticationStrategy { get set }
     
-    func buildCustomHeaders() -> [String:String]
+    func buildCustomHeaders() -> HTTPHeaders
 }
 
 extension Router {
@@ -41,18 +45,32 @@ extension Router {
         return urlRequest
     }
     
-    public func buildRequest(path :String, method :HTTPMethod, accept :ContentType?, encoding :ParameterEncoding, parameters :Parameters?) -> URLRequest? {
+    public func buildRequest(path :String,
+                             method :HTTPMethod,
+                             accept :ContentType?,
+                             encoding :ParameterEncoding,
+                             parameters :Parameters?,
+                             additionalHeaders :HTTPHeaders = [:],
+                             timeout customTimeout :TimeInterval? = nil) -> URLRequest? {
         
         let baseURL = self.baseURL.appendingPathComponent(path)
         
         var urlRequest = URLRequest(url: baseURL)
         urlRequest.httpMethod = method.rawValue
         
+        if let timeout = customTimeout {
+            urlRequest.timeoutInterval = timeout
+        }
+        
         if let accept = accept {
             urlRequest.setValue(accept.rawValue, forHTTPHeaderField: "Accept")
         }
         
         for (key, value) in buildCustomHeaders() {
+            urlRequest.setValue(value, forHTTPHeaderField: key)
+        }
+        
+        for (key, value) in additionalHeaders {
             urlRequest.setValue(value, forHTTPHeaderField: key)
         }
         
@@ -64,18 +82,18 @@ extension Router {
     }
     
     public func buildRequest(api :API) -> URLRequest? {
-        
-        return self.buildRequest(path: api.path, method: api.method, accept: api.accept, encoding: api.encoding, parameters: api.parameters)
+        return self.buildRequest(path: api.path, method: api.method, accept: api.accept, encoding: api.encoding, parameters: api.parameters, additionalHeaders: api.additionalHeaders, timeout: api.customTimeout)
     }
 }
 
 public protocol API {
-
     var path: String { get }
     var method: HTTPMethod { get }
     var encoding : ParameterEncoding { get }
     var accept : ContentType? { get }
     var parameters: Parameters? { get }
+    var additionalHeaders: HTTPHeaders { get }
+    var customTimeout: TimeInterval? { get }
 }
 
 public protocol Logging: class {
@@ -128,10 +146,9 @@ public enum MimeType: String {
 }
 
 public class HTTPClient {
- 
-    private static let kUserAgentHeader = "User-Agent"
     
-    private static let userAgent: String = {
+    public static let kUserAgentHeader = "User-Agent"
+    public static let userAgent: String = {
         let httpClient = "HTTP client"
         if let info = Bundle.main.infoDictionary {
             
@@ -150,10 +167,12 @@ public class HTTPClient {
     }()
     
     public var router :Router
+    public var manager :SessionManager
     
     // MARK: - Initialization
     
-    public init(router :Router) {
+    public init(router :Router, manager :SessionManager = HTTPClient.buildDefaultManager()) {
+        self.manager = manager
         self.router = router
         self.manager.adapter = self.router
         self.manager.retrier = self.router.authenticationStrategy
@@ -161,17 +180,17 @@ public class HTTPClient {
     
     // MARK: - Manager
     
-    public let manager: SessionManager = {
+    public static func buildDefaultManager() -> SessionManager {
         
         var defaultHeaders = SessionManager.defaultHTTPHeaders
-        defaultHeaders[kUserAgentHeader] = userAgent
+        defaultHeaders[HTTPClient.kUserAgentHeader] = userAgent
         
         let configuration = URLSessionConfiguration.default
         configuration.httpAdditionalHeaders = defaultHeaders
         configuration.timeoutIntervalForRequest = 10
         
         return SessionManager(configuration: configuration)
-    }()
+    }
     
     // MARK: - Build request
     
@@ -469,7 +488,7 @@ open class OAuth2Strategy: AuthenticationStrategy, Authentication {
             if let expirationDate = authResponse?.expirationDate {
                 self.expirationDate = expirationDate
             }
-                        
+            
             let shouldRetry = error == nil
             
             if shouldRetry {
